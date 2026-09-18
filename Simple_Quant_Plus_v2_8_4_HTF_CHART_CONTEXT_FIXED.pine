@@ -1,0 +1,1429 @@
+//@version=6
+indicator("Simple Quant+ v2.8.4 | HTF Chart Context", shorttitle="SQ+ v2.8.4", overlay=false, behind_chart=false, scale=scale.right, precision=4, max_lines_count=2, max_labels_count=10, max_bars_back=1000, dynamic_requests=true)
+
+// v2.8.4 FINAL — 2026-09-18.
+// • CHART-context MOM3/MOM6 no longer inherits the official trigger's same-session
+//   warmup rule unless the visible chart timeframe exactly matches the trigger TF.
+//   This keeps 5m trigger logic session-strict while allowing valid 1h/4h/1D
+//   chart momentum to span consecutive chart bars.
+// • CHART estimated flow/RVOL support is extended from 1-60m to 1m-1D. The
+//   official trigger remains limited to its configured 1-60m choices.
+// • TR HOURLY now also displays the latest native 1h Low-High snapshot on 4h/1D
+//   charts; <=1h charts keep the causal aligned-bar accumulator.
+// • When the confirmed Trend TF is lower than the visible chart TF, the script
+//   now returns the latest fully completed, full-duration trend bar using a
+//   lower-timeframe-safe last-intrabar request instead of selecting the shortened
+//   final RTH fragment. This removes false PARTIAL BAR BLOCKED on 4h/1D charts.
+// • ADX hysteresis now controls strength only; the current confirmed DI sign
+//   always controls direction, preventing a stale BULL/BEAR label inside the
+//   ADX 20/17 hysteresis band.
+// • MOM warmup wording distinguishes a missing MOM value from a missing prior
+//   comparison. Official DECISION remains fail-closed when chart TF > trigger TF.
+//
+// v2.8.3 FINAL — 2026-09-18.
+// • Intraday Trend/Trigger/Decision, estimated flow and RVOL now follow the
+//   active named TradingView chart session (`syminfo.session`): RTH, extended,
+//   24h or a provider-defined subsession. The hidden 09:30-16:00 gate is gone.
+// • Session resets use the chart-selected ticker plus `time_tradingday`, so
+//   overnight sessions remain one trading session. A 1h trend now warms up only
+//   for the first full hour of whichever chart session the user selected.
+// • TR HOURLY continues to use the selected chart session automatically, but it
+//   is released only when the visible chart timeframe evenly divides 60 minutes
+//   and each chart bar fits wholly inside one 1h parent. Misaligned 7m/45m
+//   charts fail closed instead of contaminating the hourly Low-High.
+// • Daily Traditional Pivot remains previous completed native 1D H/L/C.
+//
+// v2.8.2 FINAL — 2026-09-18.
+// • OVERALL TREND remains on the selected confirmed Trend TF.
+// • RAW TRIGGER and DECISION remain on the selected Trigger TF.
+// • Every supporting dashboard row now follows the visible CHART TF:
+//   DMI/ADX, MOM3, MOM6, estimated flow, EMA20 and RVOL.
+// • Removes the 12-trigger-bar rolling range and full-session extremes from the
+//   dashboard. Exactly two simple trading ranges remain: the current chart bar
+//   Low-High and the current session-anchored 1h bar Low-High.
+// • TR here means Trading Range (actual Low-High), not Wilder True Range.
+// • No TR lines are drawn. The only price-chart overlays remain EMA20 and Daily P.
+// • Decision logic, reversal hysteresis and alerts are unchanged.
+//
+// v2.8.1 — 2026-09-17.
+// • Renames ACTIVE RANGE to TRADING RANGE and puts the numeric range on the
+//   next dashboard line for easier reading. The range still updates after every
+//   completed trigger-timeframe bar; it is not frozen to an hourly refresh.
+// • Restores conventional MOM3 and MOM6 display labels. MOM6 is true cumulative
+//   momentum (close - close[6] at the default settings). DECISION still uses the
+//   preceding non-overlapping 3-bar block internally, avoiding double-counting
+//   the current MOM3 as independent confirmation.
+// • Daily Traditional P/S1/R1 remain fixed from the previous completed native
+//   daily H/L/C. They do not move with the chart, trigger timeframe or each hour.
+// • Keeps the script below TradingView's 64-plot ceiling (estimated 60 plots).
+//
+// v2.8.0 FINAL — 2026-09-17.
+// • Combines CONFIRM + ACTION into one official DECISION row.
+// • RAW TRIGGER stays live for aggressive observation and may change intrabar.
+// • DECISION is locked to the previous completed trigger bar; there is no live
+//   ACTION mode, so an unfinished 5m bar cannot create an official CALL/PUT.
+// • Adds reversal hysteresis: after an accepted CALL/PUT direction, the opposite
+//   direction must qualify on two consecutive completed trigger bars by default.
+//   A first opposite bar prints WAIT | REVERSAL 1/2 instead of flipping directly.
+// • Initial same-direction entries remain one-bar decisions; WAIT does not erase
+//   the last accepted side within the session, so later opposite signals still
+//   pass the configured reversal check. State resets at the next session.
+// • Keeps only EMA20 + Daily Pivot P on the price chart. TRADING RANGE and
+//   SESSION EXTREMES remain dashboard/Data Window values with no drawn lines.
+// • This is an entry-state research indicator, not a position/exit engine. A
+//   higher-timeframe trend turning WAIT blocks new entries; it is not by itself
+//   a stop-loss or an instruction to exit an existing trade.
+//
+// v2.7.3 — 2026-09-17.
+// • Price-chart overlay is simplified to the chart EMA20 and Daily Pivot P.
+//   The former optional VWAP visual is also removed; VWAP remains Data Window
+//   reference only and never enters the decision logic.
+// • ACTIVE RANGE and SESSION EXTREMES remain calculated and visible in the
+//   dashboard/Data Window, but their horizontal lines and price-scale tags are
+//   no longer drawn. Manual TradingView drawings are unaffected.
+// • Keeps the v2.7.2 plot-limit fix and all Trend/Trigger/DECISION calculations.
+//
+// v2.7.2 — 2026-09-17.
+// • Fixes TradingView RE10140 by reducing plot-count usage from 70 to
+//   an estimated 59. Visible chart/dashboard behaviour is unchanged.
+// • Removes only redundant Data Window audit plots for internal source
+//   timestamps/references; the underlying calculations, tooltips, range,
+//   Trend TF, Trigger TF, DECISION and alerts are unchanged.
+//
+// v2.7.1 — 2026-09-17.
+// • Evidence-aligned overall-trend default: 1-3m trigger -> 15m trend;
+//   5-15m trigger -> 1h trend; 30-60m trigger -> 4h trend.
+// • The 5m -> 1h default follows the preserved A15-versus-D60 timeframe
+//   ablation; it is a research default, not profitability certification.
+// • Intraday DECISION waits for a full completed current-session trend bar;
+//   the final short RTH fragment is never labelled a complete 1h/4h trend bar.
+//
+// v2.7.0 — 2026-09-17.
+// • Separates confirmed OVERALL TREND from the lower-timeframe RAW TRIGGER.
+// • Legacy v2.7.0 mapping was 1-5m -> 15m; v2.7.1 supersedes it above.
+// • Uses previous completed trend bars, ADX hysteresis and normalized DI spread.
+// • Normalizes setup by prior ATR and estimated Delta by parent-bar volume.
+// • Replaces overlapping MOM6 with a preceding non-overlapping MOM block.
+// • Adds CALL / PUT / WAIT decision logic, EMA no-chase gating.
+// • Resets Delta polarity at each session and blocks prior-session MOM borrowing.
+// • Adds an ACTIVE RANGE from prior completed trigger bars. The old daily band is
+//   renamed SESSION EXTREMES and is OFF by default because it only expands.
+// • Dashboard detail now uses the trigger/trend bases instead of chart-timeframe
+//   values. The pane remains explicitly chart-diagnostic.
+// This remains research software. Import/compile/live/reload qualification in
+// TradingView is required before relying on alerts.
+
+// v2.6.1 — 2026-09-17. VWAP is removed from the dashboard and from the
+// visible decision sequence after the QQQ Alpaca SIP ablation did not support
+// it as a mandatory filter. The VWAP calculation remains only for an optional
+// price-chart reference and Data Window audit; its plot and end label are OFF
+// by default. Trend/Trigger/Confirm and alerts remain unchanged. Dashboard order:
+// DMI/ADX -> MOM3 -> MOM6 -> estimated CVD session/Δ1/ΔN -> EMA20 -> DAILY -> RVOL.
+// This is a presentation/role refinement, not a profitability certification.
+// v2.6.0 — 2026-09-17. User-facing decision flow is now explicitly
+// TREND -> TRIGGER -> CONFIRMATION. TRIGGER is fixed to MOM3 + estimated Δ1
+// agreement on the selected strategy timeframe. MOM6 is confirmation only:
+// agreement = CONFIRMED; disagreement/flat = EARLY. It never vetoes a trigger.
+// DMI/ADX describes trend/strength only. EMA20 and session VWAP are location
+// context only and never delay/veto a trigger. PRICE STATE and dashboard
+// Strategy/Chart Direction rows are removed. Only Daily Pivot P is drawn;
+// S1/R1 remain in the combined DAILY table row. The selected developing Daily
+// TR/range boundaries continue updating with incoming market bars, while P/S1/R1
+// remain fixed from the previous completed native daily H/L/C until the next day.
+// Alerts follow trigger transitions (BUY/SELL/WAIT), not EMA/VWAP/ADX/MOM6 gates.
+// This remains a research indicator, not an order-entry engine. Native TradingView
+// compile/live/reload acceptance is still required after import.
+// v2.5.5 — 2026-09-16. Removes the NEXT REF display and its
+// underlying nearest-reference calculation.
+// v2.5.4 — 2026-09-16. Direction rules containing CVD now use the
+// selected strategy/chart timeframe's live one-bar flow (Δ1), rather than
+// the slower rolling Δ3 context. The CVD table is consolidated into one row:
+// session CVD | Δ1 | Δ3 (or the user-selected context length). The separate
+// Delta row is removed because it duplicated Δ1. Alerts also report Δ1.
+// Δ3 remains context only and never blocks Trigger readiness.
+// v2.5.3 fixed the recent-CVD window so it advances in
+// the parent chart/strategy context instead of relying on a lower-timeframe
+// endpoint array that could remain at 2/3 in live use. Delta and session CVD
+// remain sourced from native 1m data. ΔN is now the sum of N consecutive,
+// valid same-session parent-bar deltas, including the developing current bar.
+// Also updates the alert payload version. Native TradingView compilation and
+// live/reload acceptance remain required.
+// v2.5.2 removed the VIEW row; source diagnostics remain in tooltips.
+// v2.5.1 source, coverage and presentation update, not an
+// optimized trading strategy. Existing MOM/EMA/DMI lengths, CVD signing rule,
+// CVD lookback and median RVOL estimator are retained.
+// Native index eligibility is fixed inside the source accumulator as well as
+// at its call site. Never substitute SPY/QQQ for SPX/NDX.
+// Delta, recent CVD change, session CVD and VWAP have independent validity.
+// An unexplained source interval is NOT proof of a provider outage: there may
+// be no trade, limited history or an unavailable feed field. Do not invent
+// candles or volume. Only the affected coverage-dependent outputs are withheld.
+// Normal Pine rollback handles developing minutes; no varip volume summation.
+// Same-basis trigger calculations are checked, not cosmetically forced to agree.
+// Closed alerts use prior strategy-bar snapshots; the display remains live.
+// HOTFIX: analytics are aligned to the supplied native source-minute window,
+// not to timenow. A delayed subscription is not missing data. Wall-clock age
+// remains a display/notification safeguard only. No artificial delay offset,
+// ETF fallback, fabricated candles or hidden cross-symbol substitution.
+// Source timestamps identify bar-window boundaries, NOT exchange tick times.
+// On delayed developing source minutes, RVOL uses the preceding completed
+// minute for BOTH numerator and baseline; it never guesses sub-minute progress.
+// Native TradingView compilation, session/real-time/reload tests remain required.
+
+// ── 1. Decision architecture ───────────────────────────────────────────────
+momLen = input.int(3, "Setup MOM block: bars", minval=1, maxval=50, group="1. Decision", display=display.none, tooltip="Current setup block = close - close[momLen]. Confirmation uses the immediately preceding, non-overlapping block: close[momLen] - close[2*momLen].")
+showSecondMOM = input.bool(true, "Show MOM6 context", group="1. Decision", display=display.none, tooltip="Displays true cumulative MOM6 (close - close[6] at the default MOM3 setting). DECISION still confirms with the preceding non-overlapping 3-bar block internally.")
+momMoveAtrFrac = input.float(0.02, "MOM wording deadband: ATR fraction", minval=0.0, maxval=0.50, step=0.01, group="1. Decision", display=display.none, tooltip="Display wording only. It does not change raw calculations.")
+emaLen = input.int(20, "EMA length", minval=1, maxval=200, group="1. Decision", display=display.none)
+showHistogram = input.bool(false, "Optional MOM histogram", group="1. Decision", display=display.none)
+showRiskGuide = input.bool(false, "Show ATR distance preview", group="1. Decision", display=display.none)
+
+signalTF = input.timeframe("5", "Trigger timeframe", options=["1", "3", "5", "15", "30", "60"], group="1. Decision", display=display.none, tooltip="Execution/setup basis. Keep it independent of chart zoom. Default 5m.")
+trendMode = input.string("Auto from trigger", "Trend timeframe", options=["Auto from trigger", "Manual"], group="1. Decision", display=display.none, tooltip="Overall-trend auto mapping for this intraday build: 1-3m trigger -> 15m; 5-15m -> 1h; 30-60m -> 4h. The trend always uses the previous completed trend bar. Swing mappings such as 4h->1D and 1D->1W belong in a separate swing model because this flow engine is limited to 1-60m triggers.")
+manualTrendTF = input.timeframe("60", "Manual trend timeframe", options=["5", "15", "30", "60", "120", "240", "1D", "1W"], group="1. Decision", display=display.none)
+reversalConfirmBars = input.int(2, "Opposite DECISION: consecutive closed bars", minval=1, maxval=3, group="1. Decision", display=display.none, tooltip="After an accepted CALL or PUT side, the opposite side must qualify on this many consecutive completed trigger bars before DECISION reverses. Default 2 prevents a direct CALL-to-PUT or PUT-to-CALL flip on one closed bar. Initial entries and repeated same-side decisions remain one-bar decisions.")
+strictSessionMOM = input.bool(true, "Do not borrow prior-session MOM", group="1. Decision", display=display.none, tooltip="Applies to the official trigger/DECISION basis. Supporting CHART MOM rows may span consecutive chart bars when the visible chart timeframe differs from the trigger TF, so 1h/4h/1D context remains usable.")
+
+momAtrMin = input.float(0.10, "Minimum |MOM| / prior ATR", minval=0.0, maxval=2.0, step=0.01, group="1. Decision", display=display.none, tooltip="Normalized setup threshold. Research input, not a certified optimum.")
+deltaPctMin = input.float(0.08, "Minimum |estimated Delta| / bar volume", minval=0.0, maxval=1.0, step=0.01, group="1. Decision", display=display.none, tooltip="Participation threshold. Research input, not a certified optimum.")
+adxEnter = input.float(20.0, "Trend ADX enter", minval=1.0, maxval=100.0, step=0.5, group="1. Decision", display=display.none)
+adxExit = input.float(17.0, "Trend ADX exit", minval=1.0, maxval=100.0, step=0.5, group="1. Decision", display=display.none)
+diSpreadMin = input.float(0.08, "Minimum normalized DI spread", minval=0.0, maxval=1.0, step=0.01, group="1. Decision", display=display.none)
+maxEmaDistanceAtr = input.float(1.25, "No-chase distance from trigger EMA: ATR", minval=0.1, maxval=5.0, step=0.05, group="1. Decision", display=display.none)
+requireBlockConfirm = input.bool(true, "Require preceding MOM block for DECISION", group="1. Decision", display=display.none)
+
+// ── 2. Volume context ───────────────────────────────────────────────────────
+sessionZone = input.string("America/New_York", "Display time zone", options=["America/New_York", "America/Chicago", "Europe/London", "Etc/UTC", "Exchange"], group="2. Volume", display=display.none, tooltip="Display formatting only. Calculation sessions always follow the active TradingView chart session: RTH, extended, 24h or the selected provider-defined subsession.")
+flowEstimator = input.string("Range-weighted", "Estimated Delta method", options=["Range-weighted", "Whole-bar sign (legacy)"], group="2. Volume", display=display.none, tooltip="Range-weighted uses V*(close-open)/(high-low), clipped to +/-V. Legacy assigns the whole 1m volume to one sign. Neither is bid/ask aggressor flow.")
+rvolMode = input.string("Chart bar", "RVOL interval", options=["Chart bar", "Session cumulative"], group="2. Volume", display=display.none)
+rvolDays = input.int(20, "RVOL prior sessions", minval=5, maxval=30, group="2. Volume", display=display.none)
+minSamples = input.int(10, "RVOL minimum samples", minval=3, maxval=30, group="2. Volume", display=display.none)
+showFlow = input.bool(true, "Show estimated session CVD / Delta", group="2. Volume", display=display.none)
+cvdLen = input.int(3, "Estimated Delta context bars", minval=2, maxval=100, group="2. Volume", display=display.none)
+allowIndexVolume = input.bool(true, "Use vendor INDEX volume", group="2. Volume", display=display.none)
+indexFlowMode = input.string("Native index feed", "Cash-index Delta/CVD source", options=["Native index feed", "Off"], group="2. Volume", display=display.none)
+
+// ── 3. Range, pivots and structure ─────────────────────────────────────────
+diLen = input.int(14, "DMI length", minval=2, maxval=100, group="3. Structure", display=display.none)
+adxSmooth = input.int(14, "ADX smoothing", minval=2, maxval=100, group="3. Structure", display=display.none)
+showChartTRRow = input.bool(true, "Show Chart-TF trading range", group="3. Structure", display=display.none, tooltip="Current visible chart bar Low-High. This is a single-bar trading range, not a multi-bar lookback and not Wilder True Range.")
+showHourlyTRRow = input.bool(true, "Show 1h trading range", group="3. Structure", display=display.none, tooltip="Current chart-selected-session 1h bar Low-High, accumulated causally from aligned chart bars. RTH follows RTH; extended follows extended; 24h follows 24h. No future high/low is borrowed.")
+showPivotRow = input.bool(true, "Show Daily P / S1-R1 row", group="3. Structure", display=display.none)
+trRangeColor = input.color(color.rgb(40, 110, 220), "TR row color", group="3. Structure", display=display.none)
+
+// ── 4. Visuals ──────────────────────────────────────────────────────────────
+showEMA = input.bool(true, "Draw chart EMA", group="4. Display", display=display.none)
+showPivots = input.bool(true, "Draw Daily Pivot P", group="4. Display", display=display.none)
+pivotPColor = input.color(color.rgb(190, 145, 35), "Daily P color", group="4. Display", display=display.none)
+showTable = input.bool(true, "Show dashboard", group="4. Display", display=display.none)
+showPaneBadge = input.bool(true, "Show chart MOM badge", group="4. Display", display=display.none)
+showEMArow = input.bool(true, "Show chart-TF EMA row", group="4. Display", display=display.none)
+showRVOLrow = input.bool(true, "Show chart-TF RVOL row", group="4. Display", display=display.none)
+momLineWidth = input.int(3, "MOM line width", minval=1, maxval=5, group="4. Display", display=display.none)
+tableLocation = input.string("Top right", "Dashboard position", options=["Top right", "Middle right", "Bottom right", "Top left", "Bottom left"], group="4. Display", display=display.none)
+tableSize = input.string("Small", "Dashboard font size", options=["Tiny", "Small", "Normal"], group="4. Display", display=display.none)
+emaColor = input.color(color.orange, "EMA", group="4. Display", display=display.none)
+
+// ── 5. Alerts ───────────────────────────────────────────────────────────────
+liveAlerts = input.bool(false, "Enable alert() calls", group="5. Alerts", display=display.none)
+alertTarget = input.string("DECISION", "Alert target", options=["DECISION", "RAW TRIGGER"], group="5. Alerts", display=display.none)
+notifyWAIT = input.bool(false, "Also notify transitions to WAIT", group="5. Alerts", display=display.none)
+alertMode = input.string("Live transitions", "Raw-trigger alert confirmation", options=["Live transitions", "Closed strategy bars"], group="5. Alerts", display=display.none)
+alertCooldown = input.int(30, "Alert cooldown seconds", minval=15, maxval=600, group="5. Alerts", display=display.none)
+
+string panelPosition = tableLocation == "Middle right" ? position.middle_right : tableLocation == "Bottom right" ? position.bottom_right : tableLocation == "Top left" ? position.top_left : tableLocation == "Bottom left" ? position.bottom_left : position.top_right
+string panelTextSize = tableSize == "Tiny" ? size.tiny : tableSize == "Normal" ? size.normal : size.small
+string zone = sessionZone == "Exchange" ? syminfo.timezone : sessionZone
+string chartSessionName = syminfo.session
+string chartSessionTicker = ticker.modify(syminfo.tickerid, chartSessionName)
+int activeSessionId = time_tradingday
+float signalSeconds = timeframe.in_seconds(signalTF)
+string autoTrendTF = signalSeconds <= 180 ? "15" : signalSeconds <= 900 ? "60" : "240"
+string trendTF = trendMode == "Auto from trigger" ? autoTrendTF : manualTrendTF
+int momContextLen = momLen * 2
+bool sessionTF = timeframe.isminutes and timeframe.multiplier <= 60
+bool isIndex = syminfo.type == "index"
+bool volumeAllowed = not isIndex or allowIndexVolume
+bool nativeIndexFlow = isIndex and indexFlowMode == "Native index feed" and allowIndexVolume
+string flowTicker = chartSessionTicker
+bool flowIndexReference = isIndex and nativeIndexFlow
+bool flowAllowed = not isIndex or nativeIndexFlow
+bool sameDirectionBasis = timeframe.in_seconds(timeframe.main_period) == timeframe.in_seconds(signalTF)
+bool closedAlertSupported = sessionTF and timeframe.in_seconds(timeframe.main_period) <= timeframe.in_seconds(signalTF)
+if barstate.isfirst
+    if minSamples > rvolDays
+        runtime.error("RVOL minimum samples cannot exceed history length.")
+    if adxExit >= adxEnter
+        runtime.error("ADX exit must be below ADX enter.")
+    if not chart.is_standard
+        runtime.error("Use standard time-based Candles or Bars, not synthetic charts.")
+    if not (timeframe.isseconds or timeframe.isminutes or timeframe.isdaily or timeframe.isweekly or timeframe.ismonthly)
+        runtime.error("Use a time-based chart, not a tick-interval chart.")
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+f_num(float v) =>
+    na(v) ? "N/A" : str.tostring(v, "0.00")
+f_mom(float v) =>
+    na(v) ? "N/A" : v != 0 and math.abs(v) < 0.00000001 ? (v > 0 ? "+<1e-8" : "-<1e-8") : (v > 0 ? "+" : "") + str.tostring(v, "0.00######")
+f_price(float v) =>
+    na(v) ? "N/A" : str.tostring(v, format.mintick)
+f_vol(float v) =>
+    na(v) ? "N/A" : (v > 0 ? "+" : "") + str.tostring(v, format.volume)
+f_ratio(float v) =>
+    na(v) ? "N/A" : (v > 0 ? "+" : "") + str.tostring(v, "0.00")
+f_percent(float v) =>
+    na(v) ? "N/A" : (v > 0 ? "+" : "") + str.tostring(v * 100.0, "0.0") + "%"
+f_tf_text(string tf) =>
+    tf == "60" ? "1h" : tf == "120" ? "2h" : tf == "240" ? "4h" : tf == "1D" ? "1D" : tf == "1W" ? "1W" : tf + "m"
+f_mom_state(float momValue, float move) =>
+    na(momValue) ? "WARMUP" : na(move) ? "CHANGE WARMUP" : move > 0 ? (momValue < 0 ? "↑ RECOVERING" : momValue > 0 ? "↑ STRENGTHENING" : "↑ IMPROVING") : move < 0 ? (momValue > 0 ? "↓ FADING" : momValue < 0 ? "↓ DETERIORATING" : "↓ WEAKENING") : "→ FLAT"
+f_mom_display(float momValue, float move) =>
+    f_mom(momValue) + " | " + f_mom_state(momValue, move)
+f_bias(int d) =>
+    d == 1 ? "BULL" : d == -1 ? "BEAR" : "WAIT"
+f_color(int d) =>
+    d == 1 ? color.teal : d == -1 ? color.red : color.gray
+f_move_color(float d) =>
+    na(d) ? color.gray : d > 0 ? color.green : d < 0 ? color.red : color.gray
+f_direction_text(int direction, bool ready, string why) =>
+    not ready ? (why == "OFF SESSION" ? "OFF SESSION" : "WAIT | " + why) : direction == 1 ? "RAW BULL" : direction == -1 ? "RAW BEAR" : "WAIT | " + why
+f_trend_text(int regime, float adxValue, float spread, float emaSlope, string tf, string status) =>
+    string slopeTxt = na(emaSlope) ? "" : emaSlope > 0 ? " | EMA↑" : emaSlope < 0 ? " | EMA↓" : " | EMA→"
+    status != "OK" ? "WAIT | " + f_tf_text(tf) + " " + status : regime == 1 ? "BULL | " + f_tf_text(tf) + " CONF | ADX " + f_num(adxValue) + " | DI " + f_percent(spread) + slopeTxt : regime == -1 ? "BEAR | " + f_tf_text(tf) + " CONF | ADX " + f_num(adxValue) + " | DI " + f_percent(spread) + slopeTxt : "WAIT | " + f_tf_text(tf) + " CONF | ADX " + f_num(adxValue) + " | DI " + f_percent(spread)
+f_trend_color(int regime) =>
+    f_color(regime)
+f_adx_strength(float adxValue, float adxMove, float plusValue, float minusValue, float spread) =>
+    if na(adxValue) or na(plusValue) or na(minusValue)
+        "N/A"
+    else
+        string side = spread > 0 ? "BULL" : spread < 0 ? "BEAR" : "NEUTRAL"
+        string moveTxt = na(adxMove) ? "" : adxMove > 0 ? " | STRENGTH RISING" : adxMove < 0 ? " | STRENGTH EASING" : " | STRENGTH FLAT"
+        side + " PRESSURE | ADX " + f_num(adxValue) + " | DI " + f_percent(spread) + moveTxt
+f_trigger_text(int d, bool ready, string why, float momNorm, float deltaPct, string basis) =>
+    not ready ? (why == "OFF SESSION" ? "OFF SESSION" : "WAIT | " + why) : d == 1 ? "RAW BULL | " + basis + " | MOM/ATR " + f_ratio(momNorm) + " | Δ% " + f_percent(deltaPct) : d == -1 ? "RAW BEAR | " + basis + " | MOM/ATR " + f_ratio(momNorm) + " | Δ% " + f_percent(deltaPct) : "WAIT | " + why
+f_trigger_color(int d, bool ready) =>
+    not ready ? color.gray : f_color(d)
+f_confirmation_text(int triggerDirection, bool triggerReady, float currentBlock, float priorBlock, bool priorReady) =>
+    not triggerReady or triggerDirection == 0 ? "WAIT | NO RAW TRIGGER" : not priorReady or na(priorBlock) ? "EARLY | PRIOR BLOCK WARMUP" : triggerDirection * priorBlock < 0 ? "CONFLICT | PRIOR BLOCK OPPOSITE" : priorBlock == 0 ? "EARLY | PRIOR BLOCK FLAT" : math.abs(currentBlock) >= math.abs(priorBlock) ? "CONFIRMED | MOMENTUM BUILDING" : "CONFIRMED | MOMENTUM FADING"
+f_confirmation_ok(int triggerDirection, bool triggerReady, float priorBlock, bool priorReady) =>
+    triggerReady and triggerDirection != 0 and priorReady and not na(priorBlock) and triggerDirection * priorBlock > 0
+f_confirmation_color(int triggerDirection, bool triggerReady, float priorBlock, bool priorReady) =>
+    not triggerReady or triggerDirection == 0 or not priorReady or na(priorBlock) ? color.gray : triggerDirection * priorBlock > 0 ? (triggerDirection == 1 ? color.teal : color.red) : color.orange
+f_action_text(int action, string reason) =>
+    action == 1 ? "CALL | " + reason : action == -1 ? "PUT | " + reason : "WAIT | " + reason
+f_action_color(int action) =>
+    f_color(action)
+
+f_time(int t) =>
+    na(t) ? "N/A" : str.format_time(t, "MM-dd HH:mm", zone)
+f_symbol_name(string symbol) =>
+    array<string> parts = str.split(symbol, ":")
+    array.get(parts, array.size(parts) - 1)
+f_row(table t, int row, string title, string value, color c, string tip) =>
+    table.cell(t, 0, row, title, text_color=chart.fg_color, text_size=panelTextSize, text_halign=text.align_left, tooltip=tip)
+    table.cell(t, 1, row, "  " + value + "  ", text_color=c, text_size=panelTextSize, text_halign=text.align_left, tooltip=tip)
+f_true_range(float hi, float lo, float pc) =>
+    na(hi) or na(lo) or na(pc) or hi < lo ? na : math.max(hi - lo, math.max(math.abs(hi - pc), math.abs(lo - pc)))
+// Source-window checks never compare exchange bar time with execution time.
+f_minute_in_parent(int sourceOpen, int sourceEnd, int parentOpen, int parentEnd) =>
+    not na(sourceOpen) and not na(sourceEnd) and not na(parentOpen) and not na(parentEnd) and sourceEnd - sourceOpen == 60000 and sourceOpen >= parentOpen and sourceEnd <= parentEnd
+
+f_same_source_minute(int sourceOpen, int sourceEnd, int stamp, int clockOpen, int clockEnd, int parentOpen, int parentEnd) =>
+    f_minute_in_parent(sourceOpen, sourceEnd, parentOpen, parentEnd) and sourceOpen == clockOpen and sourceEnd == clockEnd and stamp == sourceEnd
+
+// Age is only a notification/status policy. End is a minute-window bound,
+// so this is not an exact feed-latency measurement or entitlement detector.
+f_wall_fresh(int sourceOpen, int sourceEnd, int nowAt) =>
+    not na(sourceOpen) and not na(sourceEnd) and sourceEnd - sourceOpen == 60000 and sourceOpen <= nowAt and sourceEnd >= nowAt - 90000
+
+type VolumeSession
+    array<float> cumulative
+    array<int> observed
+
+const int MAX_SELECTED_SESSION_MINUTES = 1500
+
+// Prefix entries in empty clock slots are bookkeeping, NOT synthetic candles.
+// Session identity follows the active named chart session. `time_tradingday` is
+// stable across overnight portions, while `session.isfirstbar` verifies that the
+// requested 1m history actually observed the selected session's first bar.
+// A separate observed count validates every RVOL comparison window.
+f_volume_packet(simple bool computeRVOL, simple string basisTF) =>
+    int sessionId = time_tradingday
+    bool inside = not na(sessionId)
+    var array<VolumeSession> history = array.new<VolumeSession>(0)
+    var array<float> today = array.new<float>(0)
+    var array<int> observed = array.new<int>(0)
+    var array<float> samples = array.new<float>(0)
+    var int active = na
+    var int sessionOpen = na
+    var bool sessionStartObserved = false
+    var bool sessionGood = false
+    var int lastSlot = -1
+    var int previousClose = na
+    var int observedCount = 0
+    var int selectedSessionEnd = na
+    var float cumV = 0.0
+    var float cumPV = 0.0
+    var float vw = na
+    var float rv = na
+    var int n = 0
+    var int asof = na
+    var string failure = "NO SOURCE HISTORY"
+    var string vs = "NO SOURCE HISTORY"
+    var string rs = "NO SOURCE HISTORY"
+    if inside
+        bool newSession = na(active) or active != sessionId
+        if newSession
+            // Archive only sessions whose true selected-session start was seen.
+            // Individual RVOL windows still pass their own observed-count checks.
+            if computeRVOL and not na(active) and sessionStartObserved and observedCount > 0 and cumV > 0
+                array.push(history, VolumeSession.new(array.copy(today), array.copy(observed)))
+                if array.size(history) > rvolDays
+                    array.shift(history)
+            active := sessionId
+            sessionOpen := time
+            sessionStartObserved := session.isfirstbar
+            sessionGood := sessionStartObserved
+            lastSlot := -1
+            previousClose := na
+            observedCount := 0
+            selectedSessionEnd := na
+            cumV := 0.0
+            cumPV := 0.0
+            failure := sessionGood ? "OK" : "SESSION START NOT OBSERVED"
+            if computeRVOL
+                today := array.new<float>(0)
+                observed := array.new<int>(0)
+        int slot = not na(sessionOpen) ? int((time - sessionOpen) / 60000) : -1
+        bool minuteShape = not na(time_close) and time_close - time == 60000
+        bool pricesOK = not na(open) and not na(high) and not na(low) and not na(close) and high >= math.max(open, close) and low <= math.min(open, close) and high >= low
+        bool volumeOK = not na(volume) and volume >= 0
+        bool slotOK = slot >= 0 and slot < MAX_SELECTED_SESSION_MINUTES and slot > lastSlot
+        bool continuityOK = newSession or (not na(previousClose) and time == previousClose)
+        bool minuteOK = minuteShape and pricesOK and volumeOK and slotOK
+        if not continuityOK
+            sessionGood := false
+            failure := "SOURCE COVERAGE NOT VERIFIED"
+        if not minuteOK
+            sessionGood := false
+            failure := not slotOK ? "SOURCE SLOT CHECK" : not minuteShape ? "SOURCE BAR CHECK" : not volumeOK ? "NO USABLE VOLUME" : "INVALID OHLC"
+        // Grow to the actual selected-session clock offset. Missing slots retain
+        // cumulative bookkeeping only; observed counts do not invent candles.
+        if computeRVOL and slotOK
+            while array.size(today) <= slot
+                array.push(today, cumV)
+                array.push(observed, observedCount)
+        if minuteOK
+            cumV += volume
+            cumPV += hlc3 * volume
+            observedCount += 1
+        if computeRVOL and slotOK
+            array.set(today, slot, cumV)
+            array.set(observed, slot, observedCount)
+        previousClose := time_close
+        lastSlot := slot
+        asof := time_close
+        if session.islastbar and not barstate.isrealtime
+            selectedSessionEnd := time_close
+        bool sessionCompleteSoFar = sessionGood and minuteOK and observedCount == slot + 1
+        vw := sessionCompleteSoFar and cumV > 0 ? cumPV / cumV : na
+        vs := not sessionCompleteSoFar ? failure : cumV <= 0 ? "ZERO SESSION VOLUME" : "OK"
+        rv := na
+        n := 0
+        rs := computeRVOL ? "INTERVAL NOT ALIGNED" : "OFF"
+        if computeRVOL and slotOK
+            int parent = time(basisTF)
+            int intervalStart = rvolMode == "Chart bar" ? math.max(parent, sessionOpen) : sessionOpen
+            int priorSlot = int((intervalStart - sessionOpen) / 60000) - 1
+            bool aligned = not na(parent) and not na(sessionOpen) and intervalStart >= sessionOpen and intervalStart <= time and (intervalStart - sessionOpen) % 60000 == 0
+            if aligned
+                // A delayed source minute can still be developing even when wall
+                // time is later. Do not infer entitlement or completion from age.
+                bool elapsedKnown = not barstate.isrealtime or (timenow >= time and timenow < time_close)
+                bool closedSample = not elapsedKnown
+                int sampleSlot = slot - (closedSample ? 1 : 0)
+                bool previousBarSample = closedSample and rvolMode == "Chart bar" and timeframe.in_seconds(basisTF) == 60 and sampleSlot >= 0
+                int samplePriorSlot = previousBarSample ? sampleSlot - 1 : priorSlot
+                bool haveSample = sampleSlot >= 0 and sampleSlot > samplePriorSlot and sampleSlot < array.size(today)
+                if haveSample
+                    float beforeNow = samplePriorSlot >= 0 ? array.get(today, samplePriorSlot) : 0.0
+                    int beforeCount = samplePriorSlot >= 0 ? array.get(observed, samplePriorSlot) : 0
+                    float sampleSum = array.get(today, sampleSlot)
+                    int sampleCount = array.get(observed, sampleSlot)
+                    int requiredCount = sampleSlot - samplePriorSlot
+                    bool currentComplete = (closedSample or minuteOK) and not na(beforeCount) and not na(sampleCount) and sampleCount - beforeCount == requiredCount
+                    float currentInterval = currentComplete ? sampleSum - beforeNow : na
+                    float progress = closedSample or not barstate.isrealtime ? 1.0 : math.max(0.0, math.min(1.0, float(timenow - time) / 60000.0))
+                    array.clear(samples)
+                    if array.size(history) > 0
+                        for d = 0 to array.size(history) - 1
+                            VolumeSession prior = array.get(history, d)
+                            int priorSize = array.size(prior.cumulative)
+                            bool priorHasWindow = sampleSlot < priorSize and (samplePriorSlot < 0 or samplePriorSlot < priorSize)
+                            if priorHasWindow
+                                float full = array.get(prior.cumulative, sampleSlot)
+                                float beforeMinute = sampleSlot > 0 ? array.get(prior.cumulative, sampleSlot - 1) : 0.0
+                                float beforeInterval = samplePriorSlot >= 0 ? array.get(prior.cumulative, samplePriorSlot) : 0.0
+                                int countAtEnd = array.get(prior.observed, sampleSlot)
+                                int countBefore = samplePriorSlot >= 0 ? array.get(prior.observed, samplePriorSlot) : 0
+                                bool completeWindow = not na(countAtEnd) and not na(countBefore) and countAtEnd - countBefore == requiredCount
+                                if completeWindow and not na(full) and not na(beforeMinute) and not na(beforeInterval) and full >= beforeMinute and beforeMinute >= beforeInterval
+                                    float matched = beforeMinute + (full - beforeMinute) * progress - beforeInterval
+                                    if matched >= 0
+                                        array.push(samples, matched)
+                    n := array.size(samples)
+                    float baseline = n >= minSamples ? array.median(samples) : na
+                    rv := not na(currentInterval) and currentInterval >= 0 and not na(baseline) and baseline > 0 ? currentInterval / baseline : na
+                    rs := not currentComplete ? "INTERVAL COVERAGE NOT VERIFIED" : n < minSamples ? "SAMPLES " + str.tostring(n) + "/" + str.tostring(minSamples) : na(baseline) or baseline <= 0 ? "ZERO BASELINE" : previousBarSample ? "OK | PREV BAR" : closedSample ? "OK | CLOSED SAMPLE" : "OK"
+                else
+                    rs := "WAIT CLOSED SOURCE MINUTE"
+    [vw, rv, n, active, asof, vs, rs, time, time_close, selectedSessionEnd]
+
+// Independent native 1m flow accumulator for each requested parent basis.
+// Range-weighted mode reduces the all-or-nothing +/-V distortion. Legacy mode
+// retains the old whole-bar sign estimator, but polarity is reset at session open.
+f_flow_packet(simple string basisTF) =>
+    bool canFlow = syminfo.type != "index" or (allowIndexVolume and indexFlowMode == "Native index feed")
+    int sessionId = time_tradingday
+    bool inside = not na(sessionId)
+    int currentParent = time(basisTF)
+    int currentParentEnd = time_close(basisTF)
+    var int active = na
+    var int previousCloseTime = na
+    var float previousPriceClose = na
+    var int polarity = 0
+    var bool sessionGood = false
+    var string sessionFailure = "NO SOURCE HISTORY"
+    var float cumV = 0.0
+    var float cv = 0.0
+    var float unknown = 0.0
+    var int parentOpen = na
+    var int parentEnd = na
+    var int parentMinuteCount = 0
+    var bool parentGood = false
+    var string parentFailure = "NO SOURCE HISTORY"
+    var float dv = 0.0
+    var float parentV = 0.0
+    var float parentUnknown = 0.0
+    var int asof = na
+    if inside
+        bool newSession = na(active) or active != sessionId
+        if newSession
+            active := sessionId
+            sessionGood := session.isfirstbar
+            sessionFailure := sessionGood ? "OK" : "SESSION START NOT OBSERVED"
+            previousCloseTime := na
+            previousPriceClose := na
+            polarity := 0
+            cumV := 0.0
+            cv := 0.0
+            unknown := 0.0
+            parentOpen := currentParent
+            parentEnd := currentParentEnd
+            parentMinuteCount := 0
+            parentGood := not na(currentParent) and time == currentParent
+            parentFailure := parentGood ? "OK" : "INTERVAL START NOT OBSERVED"
+            dv := 0.0
+            parentV := 0.0
+            parentUnknown := 0.0
+        else if currentParent != parentOpen
+            parentOpen := currentParent
+            parentEnd := currentParentEnd
+            parentMinuteCount := 0
+            parentGood := not na(currentParent) and time == currentParent
+            parentFailure := parentGood ? "OK" : "INTERVAL START NOT OBSERVED"
+            dv := 0.0
+            parentV := 0.0
+            parentUnknown := 0.0
+        if not newSession and (na(previousCloseTime) or time != previousCloseTime)
+            sessionGood := false
+            sessionFailure := "SOURCE COVERAGE NOT VERIFIED"
+            if time != currentParent
+                parentGood := false
+                parentFailure := "INTERVAL COVERAGE NOT VERIFIED"
+        bool parentAligned = not na(currentParent) and not na(currentParentEnd) and currentParent <= time and currentParentEnd >= time_close
+        bool minuteShape = not na(time_close) and time_close - time == 60000
+        bool pricesOK = not na(open) and not na(high) and not na(low) and not na(close) and high >= math.max(open, close) and low <= math.min(open, close) and high >= low
+        bool volumeOK = not na(volume) and volume >= 0
+        bool minuteOK = parentAligned and minuteShape and pricesOK and volumeOK
+        if not minuteOK
+            sessionGood := false
+            parentGood := false
+            sessionFailure := not parentAligned ? "PARENT ALIGNMENT" : not minuteShape ? "SOURCE BAR CHECK" : not volumeOK ? "NO USABLE VOLUME" : "INVALID OHLC"
+            parentFailure := sessionFailure
+        previousCloseTime := time_close
+        asof := time_close
+        if minuteOK
+            int resolvedPolarity = close > open ? 1 : close < open ? -1 : not na(previousPriceClose) and close > previousPriceClose ? 1 : not na(previousPriceClose) and close < previousPriceClose ? -1 : 0
+            if resolvedPolarity != 0
+                polarity := resolvedPolarity
+            float signedV = 0.0
+            if flowEstimator == "Range-weighted"
+                float span = high - low
+                float weight = span > 0 ? math.max(-1.0, math.min(1.0, (close - open) / span)) : float(resolvedPolarity)
+                signedV := volume * weight
+            else
+                signedV := polarity * volume
+                if polarity == 0 and volume > 0
+                    unknown += volume
+                    parentUnknown += volume
+            cumV += volume
+            cv += signedV
+            dv += signedV
+            parentV += volume
+            parentMinuteCount += 1
+            previousPriceClose := close
+    bool legacyUnknown = flowEstimator == "Whole-bar sign (legacy)"
+    bool deltaOK = canFlow and parentGood and (not legacyUnknown or parentUnknown == 0) and parentMinuteCount > 0 and parentV > 0
+    bool sessionOK = canFlow and sessionGood and (not legacyUnknown or unknown == 0) and cumV > 0
+    float currentCvd = sessionOK ? cv : na
+    float currentDelta = deltaOK ? dv : na
+    float currentParentVolume = deltaOK ? parentV : na
+    string status = not canFlow ? "INDEX FLOW OFF" : not sessionGood ? sessionFailure : legacyUnknown and unknown > 0 ? "UNCLASSIFIED VOLUME" : cumV <= 0 ? "ZERO SESSION VOLUME" : "OK"
+    string deltaState = not canFlow ? "INDEX FLOW OFF" : not parentGood ? parentFailure : legacyUnknown and parentUnknown > 0 ? "UNCLASSIFIED VOLUME" : parentMinuteCount == 0 ? "NO SOURCE HISTORY" : parentV <= 0 ? "ZERO BAR VOLUME" : "OK"
+    [currentCvd, currentDelta, currentParentVolume, active, asof, parentOpen, status, deltaState, time, time_close]
+
+// Confirmed trend packet for chart TF <= Trend TF. The [1] offset plus
+// lookahead_on returns the previous completed trend bar without repainting.
+f_trend_packet_confirmed() =>
+    [pdi, mdi, ax] = ta.dmi(diLen, adxSmooth)
+    float e = ta.ema(close, emaLen)
+    float spread = (pdi + mdi) > 0 ? (pdi - mdi) / (pdi + mdi) : 0.0
+    bool newSession = not na(time_tradingday[1]) and time_tradingday != time_tradingday[1]
+    var bool strengthActive = false
+    if newSession
+        strengthActive := false
+    strengthActive := strengthActive ? ax >= adxExit : ax >= adxEnter
+    int regime = strengthActive and math.abs(spread) >= diSpreadMin ? (spread > 0 ? 1 : -1) : 0
+    [regime[1], pdi[1], mdi[1], ax[1], ax[2], spread[1], e[1], e[2], close[1], time[1], time_close[1], time_tradingday[1]]
+
+// When Trend TF is lower than the visible chart TF, request.security() must use
+// lookahead_off so historical and realtime bars both return the last intrabar.
+// The requested-context calculation then selects the latest fully completed,
+// full-duration Trend-TF bar. A shortened final RTH fragment is skipped.
+f_trend_packet_latest_full(simple int expectedMs) =>
+    [pdi, mdi, ax] = ta.dmi(diLen, adxSmooth)
+    float e = ta.ema(close, emaLen)
+    float spread = (pdi + mdi) > 0 ? (pdi - mdi) / (pdi + mdi) : 0.0
+    bool newSession = not na(time_tradingday[1]) and time_tradingday != time_tradingday[1]
+    var bool strengthActive = false
+    if newSession
+        strengthActive := false
+    strengthActive := strengthActive ? ax >= adxExit : ax >= adxEnter
+    int regime = strengthActive and math.abs(spread) >= diSpreadMin ? (spread > 0 ? 1 : -1) : 0
+    bool fullDuration = not na(time_close) and time_close - time == expectedMs
+    bool completed = not barstate.isrealtime or time_close <= timenow
+    bool eligible = fullDuration and completed
+    int outRegime = ta.valuewhen(eligible, regime, 0)
+    float outPdi = ta.valuewhen(eligible, pdi, 0)
+    float outMdi = ta.valuewhen(eligible, mdi, 0)
+    float outAdx = ta.valuewhen(eligible, ax, 0)
+    float outAdxPrev = ta.valuewhen(eligible, ax, 1)
+    float outSpread = ta.valuewhen(eligible, spread, 0)
+    float outEma = ta.valuewhen(eligible, e, 0)
+    float outEmaPrev = ta.valuewhen(eligible, e, 1)
+    float outClose = ta.valuewhen(eligible, close, 0)
+    int outStart = ta.valuewhen(eligible, time, 0)
+    int outEnd = ta.valuewhen(eligible, time_close, 0)
+    int outSession = ta.valuewhen(eligible, time_tradingday, 0)
+    [outRegime, outPdi, outMdi, outAdx, outAdxPrev, outSpread, outEma, outEmaPrev, outClose, outStart, outEnd, outSession]
+
+float trendSeconds = timeframe.in_seconds(trendTF)
+int trendExpectedMs = int(trendSeconds * 1000.0)
+float chartRequestSeconds = timeframe.in_seconds(timeframe.main_period)
+bool trendIsLowerThanChart = not na(chartRequestSeconds) and chartRequestSeconds > trendSeconds
+
+int requestedTrendRegime = 0
+float trendPlusDI = na
+float trendMinusDI = na
+float trendADX = na
+float trendADXPrev = na
+float trendDISpread = na
+float trendEMA = na
+float trendEMAPrev = na
+float trendClose = na
+int trendStart = na
+int trendEnd = na
+int trendSessionId = na
+
+if trendIsLowerThanChart
+    [tr, tp, tm, tax, taxp, tspread, te, tep, tc, ts, tend, tsid] = request.security(chartSessionTicker, trendTF, f_trend_packet_latest_full(trendExpectedMs), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true, calc_bars_count=1500)
+    requestedTrendRegime := tr
+    trendPlusDI := tp
+    trendMinusDI := tm
+    trendADX := tax
+    trendADXPrev := taxp
+    trendDISpread := tspread
+    trendEMA := te
+    trendEMAPrev := tep
+    trendClose := tc
+    trendStart := ts
+    trendEnd := tend
+    trendSessionId := tsid
+else
+    [tr, tp, tm, tax, taxp, tspread, te, tep, tc, ts, tend, tsid] = request.security(chartSessionTicker, trendTF, f_trend_packet_confirmed(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, ignore_invalid_symbol=true, calc_bars_count=1500)
+    requestedTrendRegime := tr
+    trendPlusDI := tp
+    trendMinusDI := tm
+    trendADX := tax
+    trendADXPrev := taxp
+    trendDISpread := tspread
+    trendEMA := te
+    trendEMAPrev := tep
+    trendClose := tc
+    trendStart := ts
+    trendEnd := tend
+    trendSessionId := tsid
+
+float trendEMASlope = trendEMA - trendEMAPrev
+bool trendIntraday = trendSeconds < 86400
+bool trendDurationOK = not trendIntraday or (not na(trendStart) and not na(trendEnd) and trendEnd - trendStart == trendExpectedMs)
+bool trendSameActiveSession = not trendIntraday or (not na(trendSessionId) and not na(activeSessionId) and trendSessionId == activeSessionId)
+string trendStatus = na(trendADX) or na(trendDISpread) or na(trendEMA) or na(trendClose) ? "WARMUP" : not trendDurationOK ? "PARTIAL BAR BLOCKED" : not trendSameActiveSession ? "CURRENT CHART SESSION WARMUP" : "OK"
+bool trendDataReady = trendStatus == "OK"
+int trendRegime = trendDataReady ? requestedTrendRegime : 0
+
+// Core trigger packet. Price setup and estimated participation use the same
+// parent timeframe and the active named TradingView chart session.
+f_core(simple string basisTF, simple bool enforceSessionWindows) =>
+    float basisSeconds = timeframe.in_seconds(basisTF)
+    bool supported = not na(basisSeconds) and basisSeconds >= 60 and basisSeconds <= 86400
+    int feedOpen = na
+    int feedEnd = na
+    if supported
+        [clockOpen, clockEnd] = request.security(chartSessionTicker, "1", [time, time_close], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true, calc_bars_count=50000)
+        feedOpen := clockOpen
+        feedEnd := clockEnd
+    bool clockInParent = f_minute_in_parent(feedOpen, feedEnd, time, time_close)
+    int sessionId = time_tradingday
+    bool inside = not na(sessionId)
+    bool priceBarOK = not na(time_close) and time_close > time and not na(close)
+
+    bool currentBlockSameSession = not enforceSessionWindows or (not na(sessionId[momLen]) and sessionId == sessionId[momLen])
+    bool priorBlockSameSession = not enforceSessionWindows or (not na(sessionId[momContextLen]) and sessionId == sessionId[momLen] and sessionId == sessionId[momContextLen])
+    float m = currentBlockSameSession ? close - close[momLen] : na
+    float priorBlock = priorBlockSameSession ? close[momLen] - close[momContextLen] : na
+    float e = ta.ema(close, emaLen)
+    float atrBase = ta.atr(14)[1]
+    float momNorm = not na(m) and not na(atrBase) and atrBase > 0 ? m / atrBase : na
+    float emaDistanceAtr = not na(e) and not na(atrBase) and atrBase > 0 ? (close - e) / atrBase : na
+    [pdi, mdi, ax] = ta.dmi(diLen, adxSmooth)
+    bool mOK = not na(m) and not na(momNorm)
+    bool priorOK = not na(priorBlock)
+
+    float cv = na
+    float dv = na
+    float parentV = na
+    float deltaPct = na
+    float change = na
+    float changePct = na
+    int historyBars = 0
+    int flowAsOf = na
+    bool aligned = false
+    string flowStatus = not supported ? "USE 1m-1D" : not flowAllowed ? (isIndex ? (indexFlowMode == "Off" ? "INDEX FLOW OFF" : "INDEX VOLUME OFF") : "FLOW OFF") : "NO SOURCE HISTORY"
+    string deltaStatus = flowStatus
+    string changeStatus = flowStatus
+    if supported and flowAllowed
+        [fc, fd, fv, fs, fa, fp, fst, fdt, flowOpen, flowEnd] = request.security(flowTicker, "1", f_flow_packet(basisTF), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true, calc_bars_count=50000)
+        bool timeOK = inside and fs == sessionId and fp == time and f_same_source_minute(flowOpen, flowEnd, fa, feedOpen, feedEnd, time, time_close)
+        if timeOK
+            cv := fc
+            dv := fd
+            parentV := fv
+            deltaPct := not na(fv) and fv > 0 ? fd / fv : na
+            flowAsOf := fa
+            aligned := true
+            flowStatus := fst
+            deltaStatus := fdt
+        else
+            flowStatus := na(fs) ? "NO SOURCE HISTORY" : fs != sessionId ? "SESSION NOT ALIGNED" : fp != time ? "SOURCE INTERVAL NOT ALIGNED" : "SOURCE SYNC PENDING"
+            deltaStatus := flowStatus
+
+    var int cleanFlowBars = 0
+    bool sameFlowSession = not enforceSessionWindows or (not na(sessionId[1]) and sessionId == sessionId[1])
+    bool cleanFlowBar = aligned and not na(dv) and not na(parentV) and parentV > 0
+    cleanFlowBars := cleanFlowBar ? (sameFlowSession ? nz(cleanFlowBars[1]) + 1 : 1) : 0
+    historyBars := math.min(cleanFlowBars, cvdLen)
+    bool changeWindowOK = cleanFlowBars >= cvdLen
+    float rollingChange = 0.0
+    float rollingVolume = 0.0
+    if changeWindowOK
+        for offset = 0 to cvdLen - 1
+            float deltaPart = dv[offset]
+            float volumePart = parentV[offset]
+            bool sameWindowSession = not enforceSessionWindows or (not na(sessionId[offset]) and sessionId[offset] == sessionId)
+            if na(deltaPart) or na(volumePart) or volumePart <= 0 or not sameWindowSession
+                changeWindowOK := false
+            else
+                rollingChange += deltaPart
+                rollingVolume += volumePart
+    change := changeWindowOK ? rollingChange : na
+    changePct := changeWindowOK and rollingVolume > 0 ? rollingChange / rollingVolume : na
+    changeStatus := not aligned ? flowStatus : not cleanFlowBar ? deltaStatus : cleanFlowBars < cvdLen ? "Δ" + str.tostring(cvdLen) + " WARMUP " + str.tostring(cleanFlowBars) + "/" + str.tostring(cvdLen) : not changeWindowOK ? "CVD WINDOW CHECK" : "OK"
+
+    bool flowOK = aligned and not na(deltaPct)
+    bool ready = supported and inside and priceBarOK and mOK and flowOK
+    bool bull = ready and momNorm >= momAtrMin and deltaPct >= deltaPctMin
+    bool bear = ready and momNorm <= -momAtrMin and deltaPct <= -deltaPctMin
+    int direction = bull ? 1 : bear ? -1 : 0
+    string why = not supported ? "USE 1m-1D" : not priceBarOK ? "PRICE BAR CHECK" : not currentBlockSameSession ? "OPENING MOM WARMUP" : na(atrBase) or atrBase <= 0 ? "ATR WARMUP" : not mOK ? "MOM WARMUP" : not flowOK ? deltaStatus : math.abs(momNorm) < momAtrMin ? "MOM/ATR BELOW THRESHOLD" : math.abs(deltaPct) < deltaPctMin ? "Δ% BELOW THRESHOLD" : momNorm * deltaPct < 0 ? "MOM / Δ% CONFLICT" : "THRESHOLDS NOT ALIGNED"
+    [direction, ready, why, close, close[momLen], close[momContextLen], m, priorBlock, momNorm, e, atrBase, emaDistanceAtr, pdi, mdi, ax, m[1], priorBlock[1], ax[1], time, time_close, cv, dv, parentV, deltaPct, change, changePct, historyBars, flowAsOf, flowStatus, aligned, mOK, priorOK, sessionId, deltaStatus, changeStatus, feedOpen, feedEnd]
+
+// Explicit trigger-timeframe snapshot.
+[strategyDirection, strategyReady, strategyWhy, strategyClose, strategyRef, strategyRef2, strategyMOM, strategyPriorMOM, strategyMOMNorm, strategyEMA, strategyATR, strategyEMADistance, strategyPlusDI, strategyMinusDI, strategyADX, strategyMPrev, strategyPriorMPrev, strategyADXPrev, strategyStart, strategyEnd, strategyCVD, strategyDelta, strategyParentVolume, strategyDeltaPct, strategyChange, strategyChangePct, strategyHistory, strategyAsOf, strategyFlowStatus, strategyAligned, strategyMOMReady, strategyPriorReady, strategySession, strategyDeltaStatus, strategyChangeStatus, strategyFeedStart, strategyFeedEnd] = request.security(chartSessionTicker, signalTF, f_core(signalTF, strictSessionMOM), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true, calc_bars_count=1500)
+
+// Local chart context packet. It drives supporting rows only; it never drives TREND or DECISION.
+// Preserve exact trigger/chart parity when both bases match; otherwise chart MOM
+// and chart multi-bar flow may span sessions so 1h/4h/1D context remains usable.
+bool chartEnforceSessionWindows = sameDirectionBasis and strictSessionMOM
+[chartDirection, chartReady, chartWhy, localClose, momRef, mom2Ref, mom, priorMom, chartMOMNorm, ema, localATR, localEMADistance, plusDI, minusDI, adx, momPrevious, priorMomPrevious, adxPrevious, localStart, localEnd, sessionCVD, barDelta, chartParentVolume, chartDeltaPct, cvdRecentChange, chartChangePct, cvdHistoryBars, flowAsOf, flowStatus, flowClockAligned, momReady, priorMomReady, localSession, deltaStatus, changeStatus, localFeedStart, localFeedEnd] = f_core(timeframe.main_period, chartEnforceSessionWindows)
+float momMoveBand = momMoveAtrFrac == 0 ? 0.0 : not na(localATR) ? math.max(syminfo.mintick, localATR * momMoveAtrFrac) : syminfo.mintick
+float mom6 = not na(mom) and not na(priorMom) ? mom + priorMom : na
+float mom6Previous = not na(momPrevious) and not na(priorMomPrevious) ? momPrevious + priorMomPrevious : na
+float momMoveRaw = mom - momPrevious
+float mom6MoveRaw = mom6 - mom6Previous
+float momArrowChange = na(momMoveRaw) ? na : math.abs(momMoveRaw) <= momMoveBand ? 0.0 : momMoveRaw
+float mom6ArrowChange = na(mom6MoveRaw) ? na : math.abs(mom6MoveRaw) <= momMoveBand ? 0.0 : mom6MoveRaw
+bool openRealtimeBar = barstate.isrealtime
+string tfText = timeframe.isminutes ? str.tostring(timeframe.multiplier) + "m" : timeframe.period
+string strategyTFText = f_tf_text(signalTF)
+string trendTFText = f_tf_text(trendTF)
+string flowName = syminfo.ticker
+string flowTableSuffix = isIndex ? " " + flowName + "*" : ""
+
+bool sameBasisMismatch = sameDirectionBasis and strategyStart == localStart and (strategyDirection != chartDirection or strategyReady != chartReady or (not na(strategyMOM) and not na(mom) and math.abs(strategyMOM - mom) > 1e-8) or (na(strategyDelta) != na(barDelta)) or (not na(strategyDelta) and not na(barDelta) and math.abs(strategyDelta - barDelta) > math.max(1e-8, math.abs(barDelta) * 1e-10)) or (na(strategyDeltaPct) != na(chartDeltaPct)) or (not na(strategyDeltaPct) and not na(chartDeltaPct) and math.abs(strategyDeltaPct - chartDeltaPct) > 1e-10))
+
+// Trigger-session identity remains independent because RAW TRIGGER and DECISION
+// stay on signalTF even when the visible chart timeframe changes. All identities
+// use the active named chart session's `time_tradingday`.
+bool strategyFeedAligned = f_minute_in_parent(strategyFeedStart, strategyFeedEnd, strategyStart, strategyEnd)
+int expectedSessionId = activeSessionId
+bool strategySourceInSession = strategyFeedAligned and not na(strategySession) and strategySession == expectedSessionId
+
+// Dashboard RVOL/VWAP context follows the visible chart timeframe.
+bool chartFeedAligned = f_minute_in_parent(localFeedStart, localFeedEnd, localStart, localEnd)
+int expectedChartSessionId = activeSessionId
+bool chartSourceInSession = chartFeedAligned and not na(localSession) and localSession == expectedChartSessionId
+int volumeSourceStart = na
+int volumeSourceEnd = na
+int volumePacketStamp = na
+float sessionVWAP = na
+float rvol = na
+int rvolN = 0
+bool volumeIsReference = false
+bool vwapInThisBar = false
+string vwapStatus = not volumeAllowed ? "INDEX VOLUME OFF" : "NO SOURCE HISTORY"
+string rvolStatus = vwapStatus
+if volumeAllowed
+    [v, rv, n, sid, stamp, vs, rs, volumeOpen, volumeEnd, sourceSelectedSessionEnd] = request.security(chartSessionTicker, "1", f_volume_packet(true, timeframe.main_period), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true, calc_bars_count=50000)
+    volumeSourceStart := volumeOpen
+    volumeSourceEnd := volumeEnd
+    volumePacketStamp := stamp
+    bool same = sid == expectedChartSessionId
+    bool ref = same and not chartSourceInSession and not na(sourceSelectedSessionEnd) and stamp == sourceSelectedSessionEnd
+    bool fresh = same and chartSourceInSession and f_same_source_minute(volumeOpen, volumeEnd, stamp, localFeedStart, localFeedEnd, localStart, localEnd)
+    if fresh or ref
+        sessionVWAP := v
+        rvol := rv
+        rvolN := n
+        volumeIsReference := ref
+        vwapInThisBar := fresh and not na(v)
+        vwapStatus := vs
+        rvolStatus := rs
+    else
+        vwapStatus := not same ? (na(sid) ? "NO SOURCE HISTORY" : "OTHER SESSION") : "SOURCE SYNC PENDING"
+        rvolStatus := vwapStatus
+
+// Previous completed trigger bar for stable DECISION and optional closed RAW alerts.
+f_closed_strategy(simple string basisTF) =>
+    [d, ok, reason, px, ref1, ref2, m, priorBlock, momNorm, e, atrBase, emaDist, pdi, mdi, ax, pm, pPrior, pax, beginAt, endAt, cv, dv, parentV, deltaPct, change, changePct, count, stamp, fs, aligned, mok, priorOK, sid, ds, cs, feedOpen, feedEnd] = f_core(basisTF, strictSessionMOM)
+    [d[1], ok[1], reason[1], px[1], m[1], priorBlock[1], momNorm[1], e[1], atrBase[1], emaDist[1], dv[1], deltaPct[1], changePct[1], beginAt[1], endAt[1], sid[1], priorOK[1], feedOpen[1], feedEnd[1]]
+
+int closedDirection = 0
+bool closedReady = false
+string closedWhy = "CLOSED DECISION UNAVAILABLE"
+float closedPrice = na
+float closedMOM = na
+float closedPriorMOM = na
+float closedMOMNorm = na
+float closedEMA = na
+float closedATR = na
+float closedEMADistance = na
+float closedDelta1 = na
+float closedDeltaPct = na
+float closedChangePct = na
+int closedStart = na
+int closedEnd = na
+int closedSession = na
+bool closedPriorReady = false
+int closedFeedStart = na
+int closedFeedEnd = na
+bool closedDecisionSupported = timeframe.in_seconds(timeframe.main_period) <= timeframe.in_seconds(signalTF)
+if closedDecisionSupported
+    [cd, cr, cw, cp, cm, cpm, cmn, ce, ca, ced, cdelta, cdp, ccp, cb, cend, csid, cpriorok, cfeedopen, cfeedend] = request.security(chartSessionTicker, signalTF, f_closed_strategy(signalTF), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, ignore_invalid_symbol=true, calc_bars_count=1500)
+    closedDirection := cd
+    closedReady := cr
+    closedWhy := cw
+    closedPrice := cp
+    closedMOM := cm
+    closedPriorMOM := cpm
+    closedMOMNorm := cmn
+    closedEMA := ce
+    closedATR := ca
+    closedEMADistance := ced
+    closedDelta1 := cdelta
+    closedDeltaPct := cdp
+    closedChangePct := ccp
+    closedStart := cb
+    closedEnd := cend
+    closedSession := csid
+    closedPriorReady := cpriorok
+    closedFeedStart := cfeedopen
+    closedFeedEnd := cfeedend
+
+// Official DECISION is always based on the previous completed trigger bar.
+// RAW TRIGGER above remains the only live/aggressive preview.
+int decisionDirection = closedDirection
+bool decisionReady = closedReady
+string decisionWhy = closedWhy
+float decisionPrice = closedPrice
+float decisionMOM = closedMOM
+float decisionPriorMOM = closedPriorMOM
+float decisionMOMNorm = closedMOMNorm
+float decisionEMA = closedEMA
+float decisionATR = closedATR
+float decisionEMADistance = closedEMADistance
+float decisionDelta1 = closedDelta1
+float decisionDeltaPct = closedDeltaPct
+float decisionChangePct = closedChangePct
+int decisionStart = closedStart
+int decisionEnd = closedEnd
+int decisionSession = closedSession
+bool decisionPriorReady = closedPriorReady
+bool actionBasisAvailable = closedDecisionSupported
+bool decisionSameActiveSession = not na(decisionSession) and decisionSession == expectedSessionId
+string decisionConfirmation = f_confirmation_text(decisionDirection, decisionReady, decisionMOM, decisionPriorMOM, decisionPriorReady)
+bool blockConfirmOK = f_confirmation_ok(decisionDirection, decisionReady, decisionPriorMOM, decisionPriorReady)
+bool notExtended = na(decisionEMADistance) ? false : decisionDirection == 1 ? decisionEMADistance <= maxEmaDistanceAtr : decisionDirection == -1 ? decisionEMADistance >= -maxEmaDistanceAtr : false
+
+// First resolve the completed-bar candidate without persistence/hysteresis.
+int candidateActionDirection = 0
+string candidateActionReason = "NO CLOSED TRIGGER"
+if not actionBasisAvailable
+    candidateActionReason := "CHART TF EXCEEDS TRIGGER TF"
+else if not decisionSameActiveSession
+    candidateActionReason := "CURRENT SESSION TRIGGER WARMUP"
+else if not decisionReady
+    candidateActionReason := decisionWhy
+else if decisionDirection == 0
+    candidateActionReason := decisionWhy
+else if trendRegime == 0
+    candidateActionReason := trendStatus == "OK" ? "CONFIRMED TREND IS WAIT" : "TREND " + trendStatus
+else if decisionDirection != trendRegime
+    candidateActionReason := "COUNTER-TREND CLOSED SIGNAL"
+else if requireBlockConfirm and not blockConfirmOK
+    candidateActionReason := decisionConfirmation
+else if not notExtended
+    candidateActionReason := "NO CHASE | EMA DIST " + f_ratio(decisionEMADistance) + " ATR"
+else
+    candidateActionDirection := decisionDirection
+    candidateActionReason := "TREND + NORMALIZED TRIGGER" + (requireBlockConfirm ? " + BLOCK CONFIRM" : "")
+
+// Reversal hysteresis is evaluated once per newly completed trigger bar.
+// A WAIT bar does not erase the last accepted side within the session. This
+// prevents a later one-bar opposite signal from bypassing the reversal check.
+bool newClosedDecision = not na(decisionEnd) and (na(decisionEnd[1]) or decisionEnd != decisionEnd[1])
+var int acceptedDecisionDirection = 0
+var int reversalCandidateDirection = 0
+var int reversalCandidateCount = 0
+var int stableDecisionDirection = 0
+var string stableDecisionReason = "CLOSED DECISION WARMUP"
+var string stableDecisionConfirm = "WAIT | NO CLOSED TRIGGER"
+var int stableDecisionEnd = na
+var int stableDecisionSession = na
+
+bool activeDecisionSessionChanged = not na(expectedSessionId) and (na(stableDecisionSession) or expectedSessionId != stableDecisionSession)
+if activeDecisionSessionChanged
+    acceptedDecisionDirection := 0
+    reversalCandidateDirection := 0
+    reversalCandidateCount := 0
+    stableDecisionDirection := 0
+    stableDecisionReason := "CURRENT SESSION TRIGGER WARMUP"
+    stableDecisionConfirm := "WAIT | NO CURRENT-SESSION CLOSED TRIGGER"
+    stableDecisionEnd := na
+    stableDecisionSession := expectedSessionId
+
+if not actionBasisAvailable
+    stableDecisionDirection := 0
+    stableDecisionReason := "CHART TF EXCEEDS TRIGGER TF"
+else if newClosedDecision and decisionSameActiveSession
+    stableDecisionEnd := decisionEnd
+    stableDecisionConfirm := decisionConfirmation
+    if candidateActionDirection == 0
+        stableDecisionDirection := 0
+        stableDecisionReason := candidateActionReason
+        reversalCandidateDirection := 0
+        reversalCandidateCount := 0
+    else if acceptedDecisionDirection == 0 or candidateActionDirection == acceptedDecisionDirection
+        acceptedDecisionDirection := candidateActionDirection
+        stableDecisionDirection := candidateActionDirection
+        stableDecisionReason := candidateActionReason
+        reversalCandidateDirection := 0
+        reversalCandidateCount := 0
+    else
+        if reversalCandidateDirection == candidateActionDirection
+            reversalCandidateCount += 1
+        else
+            reversalCandidateDirection := candidateActionDirection
+            reversalCandidateCount := 1
+        if reversalCandidateCount >= reversalConfirmBars
+            acceptedDecisionDirection := candidateActionDirection
+            stableDecisionDirection := candidateActionDirection
+            stableDecisionReason := candidateActionReason + " | REVERSAL CONFIRMED"
+            reversalCandidateDirection := 0
+            reversalCandidateCount := 0
+        else
+            stableDecisionDirection := 0
+            stableDecisionReason := "REVERSAL " + str.tostring(reversalCandidateCount) + "/" + str.tostring(reversalConfirmBars) + " | WAIT NEXT CLOSED " + strategyTFText
+
+int actionDirection = stableDecisionDirection
+string actionReason = stableDecisionReason
+
+f_notification(string kind, int state, int eventNumber) =>
+    string decisionStateText = state == 1 ? "CALL | " + stableDecisionConfirm + " | CLOSED " + strategyTFText : state == -1 ? "PUT | " + stableDecisionConfirm + " | CLOSED " + strategyTFText : "WAIT | " + actionReason + " | CLOSED " + strategyTFText
+    string stateText = alertTarget == "DECISION" ? decisionStateText : f_trigger_text(state, alertMode == "Closed strategy bars" ? closedReady : strategyReady, alertMode == "Closed strategy bars" ? closedWhy : strategyWhy, alertMode == "Closed strategy bars" ? closedMOMNorm : strategyMOMNorm, alertMode == "Closed strategy bars" ? closedDeltaPct : strategyDeltaPct, alertMode == "Closed strategy bars" ? "CLOSED" : "LIVE")
+    "SQ284|" + syminfo.tickerid + "|" + kind + "|" + strategyTFText + "|trend=" + trendTFText + "|" + str.tostring(eventNumber) + " | " + stateText + " | price " + f_price(decisionPrice) + " | MOM/ATR " + f_ratio(decisionMOMNorm) + " | Delta% " + f_percent(decisionDeltaPct) + " | EMA dist " + f_ratio(decisionEMADistance) + " ATR | RESEARCH SIGNAL; NOT AN ORDER"
+
+varip int observedAlertState = na
+varip int observedAlertSession = na
+varip int lastSentAt = na
+varip int eventNumber = 0
+bool liveSourceFresh = f_wall_fresh(strategyFeedStart, strategyFeedEnd, timenow) and not na(strategyEnd) and not na(activeSessionId) and strategySession == activeSessionId
+int rawAlertDirection = alertMode == "Closed strategy bars" ? closedDirection : strategyDirection
+bool rawAlertReady = alertMode == "Closed strategy bars" ? closedReady and closedDecisionSupported : strategyReady
+int currentAlertState = alertTarget == "DECISION" ? actionDirection : rawAlertDirection
+bool currentAlertReady = alertTarget == "DECISION" ? actionBasisAvailable and decisionSameActiveSession and decisionReady : rawAlertReady
+int currentAlertSession = alertTarget == "DECISION" ? decisionSession : alertMode == "Closed strategy bars" ? closedSession : strategySession
+bool sameAlertSession = not na(observedAlertSession) and currentAlertSession == observedAlertSession
+bool alertChanged = currentAlertReady and liveSourceFresh and sameAlertSession and not na(observedAlertState) and currentAlertState != observedAlertState
+bool mayNotify = na(lastSentAt) or timenow - lastSentAt >= alertCooldown * 1000
+if barstate.isrealtime
+    if liveAlerts and alertChanged and mayNotify and (currentAlertState != 0 or notifyWAIT)
+        eventNumber += 1
+        alert(f_notification(alertTarget, currentAlertState, eventNumber), alert.freq_all)
+        lastSentAt := timenow
+    observedAlertState := currentAlertReady and liveSourceFresh ? currentAlertState : na
+    observedAlertSession := currentAlertReady and liveSourceFresh ? currentAlertSession : na
+
+// Optional distance context. Always uses a preceding completed strategy ATR,
+// not the old hard-coded developing 15m ATR. Never an entry/stop/target engine.
+float riskATR = na
+if showRiskGuide
+    if timeframe.in_seconds(signalTF) >= timeframe.in_seconds(timeframe.main_period)
+        riskATR := request.security(chartSessionTicker, signalTF, ta.atr(14)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+    else
+        riskATR := request.security(chartSessionTicker, signalTF, ta.atr(14)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+string riskGuide = "ATR " + f_price(riskATR) + " | 2x " + f_price(2.0 * riskATR) + " | 4x " + f_price(4.0 * riskATR)
+string riskTip = "ATR14 from the preceding completed strategy bar (" + strategyTFText + "), not a developing fixed-15m value. On larger host charts this is a sampled preceding strategy bar, not every intrabar event. 2x/4x distances only; no entry anchor, position or exit engine. These are not stop/target recommendations or frozen orders. OFF by default."
+
+// ── Prior daily source + exactly two trading ranges ─────────────────────────
+bool trOnDailyChart = timeframe.isdaily and timeframe.multiplier == 1
+bool trOnIntradayChart = timeframe.isseconds or timeframe.isminutes
+bool trTimeframeOK = trOnDailyChart or trOnIntradayChart
+float dailyPrevHigh = na
+float dailyPrevLow = na
+float dailyPrevClose = na
+int dailyStart = na
+int dailyPrevStart = na
+int dailyPrevEnd = na
+if trOnIntradayChart
+    [dHigh, dLow, dClose, dStart, dPrevStart, dPrevEnd] = request.security(syminfo.tickerid, "1D", [high[1], low[1], close[1], time, time[1], time_close[1]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, ignore_invalid_symbol=true)
+    dailyPrevHigh := dHigh
+    dailyPrevLow := dLow
+    dailyPrevClose := dClose
+    dailyStart := dStart
+    dailyPrevStart := dPrevStart
+    dailyPrevEnd := dPrevEnd
+else if trOnDailyChart
+    dailyPrevHigh := high[1]
+    dailyPrevLow := low[1]
+    dailyPrevClose := close[1]
+    dailyStart := time
+    dailyPrevStart := time[1]
+    dailyPrevEnd := time_close[1]
+
+// TR means Trading Range here: actual Low-High of one bar, not Wilder TR.
+// Chart TR follows the visible chart bar and therefore changes automatically
+// when the user changes the TradingView chart timeframe.
+bool chartTRReady = not na(low) and not na(high) and high >= low
+float chartTRLow = chartTRReady ? low : na
+float chartTRHigh = chartTRReady ? high : na
+float chartTRWidth = chartTRReady ? high - low : na
+
+// Hourly TR is the current chart-selected-session 1h bar Low-High.
+// • On chart TF <= 1h, it is rebuilt causally from aligned visible chart bars.
+// • On 4h/1D charts, lookahead_off requests the latest available 1h intrabar,
+//   which gives the current/last 1h Low-High without pretending the 4h/1D OHLC
+//   can itself reconstruct every hourly bar. RTH/extended/24h follow the active
+//   named chart session through chartSessionTicker.
+float chartSeconds = timeframe.in_seconds(timeframe.main_period)
+bool hourlyFromChartBarsSupported = not na(chartSeconds) and chartSeconds > 0 and chartSeconds <= 3600
+bool hourlyTFAligned = hourlyFromChartBarsSupported and 3600 % int(chartSeconds) == 0
+int chartBuiltHourStart = hourlyTFAligned ? time("60") : na
+int chartBuiltHourEnd = hourlyTFAligned ? time_close("60") : na
+bool hourlyBarInsideParent = hourlyTFAligned and not na(chartBuiltHourStart) and not na(chartBuiltHourEnd) and time >= chartBuiltHourStart and time_close <= chartBuiltHourEnd
+
+bool hourlyFromLTFSupported = not na(chartSeconds) and chartSeconds > 3600 and chartSeconds <= 86400
+float requestedHourlyLow = na
+float requestedHourlyHigh = na
+int requestedHourlyStart = na
+int requestedHourlyEnd = na
+if hourlyFromLTFSupported
+    [hLo, hHi, hStart, hEnd] = request.security(chartSessionTicker, "60", [low, high, time, time_close], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true, calc_bars_count=1500)
+    requestedHourlyLow := hLo
+    requestedHourlyHigh := hHi
+    requestedHourlyStart := hStart
+    requestedHourlyEnd := hEnd
+
+var int activeHourlyParent = na
+var float hourlyTRLow = na
+var float hourlyTRHigh = na
+int hourlyParentStart = na
+int hourlyParentEnd = na
+if hourlyBarInsideParent
+    bool newHourlyParent = na(activeHourlyParent) or chartBuiltHourStart != activeHourlyParent
+    if newHourlyParent
+        activeHourlyParent := chartBuiltHourStart
+        hourlyTRLow := low
+        hourlyTRHigh := high
+    else
+        hourlyTRLow := math.min(hourlyTRLow, low)
+        hourlyTRHigh := math.max(hourlyTRHigh, high)
+    hourlyParentStart := chartBuiltHourStart
+    hourlyParentEnd := chartBuiltHourEnd
+else if hourlyFromLTFSupported
+    activeHourlyParent := requestedHourlyStart
+    hourlyTRLow := requestedHourlyLow
+    hourlyTRHigh := requestedHourlyHigh
+    hourlyParentStart := requestedHourlyStart
+    hourlyParentEnd := requestedHourlyEnd
+
+bool hourlyTRSupported = hourlyFromChartBarsSupported or hourlyFromLTFSupported
+bool hourlyTRReady = hourlyTRSupported and not na(hourlyParentStart) and not na(hourlyParentEnd) and not na(hourlyTRLow) and not na(hourlyTRHigh) and hourlyTRHigh >= hourlyTRLow
+float hourlyTRWidth = hourlyTRReady ? hourlyTRHigh - hourlyTRLow : na
+bool hourlyTRPartial = hourlyTRReady and hourlyParentEnd - hourlyParentStart < 3600000
+bool hourlyTRLowerSnapshot = hourlyTRReady and hourlyFromLTFSupported
+
+// ── DAILY Traditional pivot points: P / R1 / S1 ONLY ───────────────────────────
+// Official formulas: tradingview.com/support/solutions/43000521824/
+// HTF prices use [1] + lookahead_on: previous completed DAILY values, not
+// high[1]/low[1] from the chart timeframe and not the developing daily candle.
+// Unshifted daily time below is a period identity, NOT future price information.
+// Native daily data is deliberate: stocks generally exclude extended-hours
+// trades; futures daily bars may use ETH and settlement as close. Those levels
+// can differ from pivots rebuilt from an intraday-only RTH session.
+bool pivotPricesOK = not na(dailyPrevHigh) and not na(dailyPrevLow) and not na(dailyPrevClose) and dailyPrevHigh >= dailyPrevLow
+bool pivotTimesOK = not na(dailyStart) and not na(dailyPrevStart) and not na(dailyPrevEnd) and dailyPrevStart < dailyStart and dailyPrevEnd <= time
+bool pivotReadyBase = trTimeframeOK and pivotPricesOK and pivotTimesOK
+float pivotRawP = pivotReadyBase ? (dailyPrevHigh + dailyPrevLow + dailyPrevClose) / 3.0 : na
+float pivotRawR1 = pivotReadyBase ? 2.0 * pivotRawP - dailyPrevLow : na
+float pivotRawS1 = pivotReadyBase ? 2.0 * pivotRawP - dailyPrevHigh : na
+// Arithmetic regression guard. Reverse the displayed formulas back into H/L/C.
+// This should be exact apart from floating-point noise; if future edits break a
+// formula, the pivot is withheld instead of silently drawing a wrong level.
+float pivotAuditHigh = pivotReadyBase ? 2.0 * pivotRawP - pivotRawS1 : na
+float pivotAuditLow = pivotReadyBase ? 2.0 * pivotRawP - pivotRawR1 : na
+float pivotAuditClose = pivotReadyBase ? 3.0 * pivotRawP - dailyPrevHigh - dailyPrevLow : na
+float pivotTol = math.max(syminfo.mintick * 0.001, 1e-8)
+bool pivotMathOK = pivotReadyBase and math.abs(pivotAuditHigh - dailyPrevHigh) <= pivotTol and math.abs(pivotAuditLow - dailyPrevLow) <= pivotTol and math.abs(pivotAuditClose - dailyPrevClose) <= pivotTol
+// Close normally sits inside that day's H/L. Do not make this a hard failure for
+// futures because settlement can legitimately differ from the last traded print.
+bool pivotCloseInside = pivotReadyBase and dailyPrevClose >= dailyPrevLow - syminfo.mintick and dailyPrevClose <= dailyPrevHigh + syminfo.mintick
+bool pivotSourceSanityOK = syminfo.type == "futures" ? pivotReadyBase : pivotCloseInside
+bool pivotReady = pivotReadyBase and pivotMathOK and pivotSourceSanityOK
+string pivotStatus = not trTimeframeOK ? "USE INTRADAY / 1D" : not pivotPricesOK ? "NO VALID PREV DAILY HLC" : not pivotTimesOK ? "DAILY TIME CHECK" : not pivotMathOK ? "PIVOT MATH CHECK FAILED" : not pivotSourceSanityOK ? "PREV CLOSE OUTSIDE H/L" : "OK"
+float dailyP = pivotReady ? pivotRawP : na
+float dailyR1 = pivotReady ? pivotRawR1 : na
+float dailyS1 = pivotReady ? pivotRawS1 : na
+string pivotDate = na(dailyStart) ? "N/A" : str.format_time(dailyStart, "yyyy-MM-dd HH:mm", syminfo.timezone)
+string pivotSourceDate = na(dailyPrevStart) ? "N/A" : str.format_time(dailyPrevStart, "yyyy-MM-dd HH:mm", syminfo.timezone)
+string pivotTip = "Traditional DAILY P=(H+L+C)/3; R1=2P-L; S1=2P-H. Native previous completed 1D source: " + syminfo.tickerid + ". Active daily period starts " + pivotDate + "; previous daily bar starts " + pivotSourceDate + " " + syminfo.timezone + ". Exact source H=" + f_price(dailyPrevHigh) + "; L=" + f_price(dailyPrevLow) + "; C=" + f_price(dailyPrevClose) + ". Arithmetic audit reverses P/R1/S1 back to H/L/C before levels are released. Non-futures also require previous close to sit inside H/L within one minimum tick. No current-price input; no right-side confirmation delay. Intraday timeframe changes do not change the DAILY basis. Native daily feeds can differ from intraday-session OHLC; futures close may be settlement. Independent of the selected intraday session engine. Only reference levels, not orders, predicted day limits or extra MOM gates. Status: " + pivotStatus
+
+// One reusable central Pivot line on the PRICE chart. S1/R1 remain table/data-window
+// references only. Separate scale-only plot below creates the P right-axis tag.
+// bar_time coordinates support long intraday histories without bar_index limits.
+// Only the latest daily set is shown; older days are not retroactively painted.
+var line pLine = na
+if barstate.islast
+    if showPivots and pivotReady
+        int levelStart = math.min(dailyStart, time)
+        int levelEnd = time_close
+        if na(pLine)
+            pLine := line.new(levelStart, dailyP, levelEnd, dailyP, xloc=xloc.bar_time, extend=extend.right, color=pivotPColor, width=2, force_overlay=true)
+        else
+            line.set_xy1(pLine, levelStart, dailyP)
+            line.set_xy2(pLine, levelEnd, dailyP)
+    else
+        if not na(pLine)
+            line.delete(pLine)
+            pLine := na
+
+// Local chart MOM/EMA drawings and supporting rows follow the visible chart TF.
+color liveMOMColor = f_move_color(momArrowChange)
+color liveMOM2Color = f_move_color(mom6ArrowChange)
+plot(showHistogram ? mom : na, "CHART MOM optional histogram", color=color.new(liveMOMColor,55), style=plot.style_columns, display=display.pane)
+plot(mom, "CHART primary MOM", color=liveMOMColor, linewidth=momLineWidth, style=plot.style_linebr, display=display.pane + display.data_window + display.price_scale)
+plot(showSecondMOM ? mom6 : na, "CHART MOM6 context", color=liveMOM2Color, linewidth=2, style=plot.style_linebr, display=display.pane + display.data_window + display.price_scale)
+hline(0, "MOM zero", color=color.new(chart.fg_color,30))
+plot(openRealtimeBar ? mom : na, "Local live endpoint", color=liveMOMColor, style=plot.style_circles, linewidth=4, display=display.pane)
+plot(showSecondMOM and openRealtimeBar ? mom6 : na, "Local MOM6 live endpoint", color=liveMOM2Color, style=plot.style_circles, linewidth=3, display=display.pane)
+plot(showEMA ? ema : na, "CHART EMA", color=emaColor, linewidth=2, force_overlay=true, display=display.pane)
+// Session VWAP remains calculation/Data Window context only. It is not drawn
+// on the price chart and never enters TREND, RAW TRIGGER or DECISION.
+
+// Right-axis price tags for the current Daily Pivot set. display.price_scale keeps
+// these plots off the chart body while exposing clean native-style price boxes.
+plot(showPivots and pivotReady ? dailyP : na, "Daily Pivot P price tag", color=pivotPColor, force_overlay=true, display=display.price_scale)
+
+// Exactly two dashboard trading ranges; neither draws a line on price.
+string chartTRText = chartTRReady ? f_price(chartTRLow) + " - " + f_price(chartTRHigh) + " (" + f_price(chartTRWidth) + " pts)" : "N/A"
+string hourlyTRText = hourlyTRReady ? f_price(hourlyTRLow) + " - " + f_price(hourlyTRHigh) + " (" + f_price(hourlyTRWidth) + " pts)" + (hourlyTRLowerSnapshot ? " | 1h SNAPSHOT" : "") + (hourlyTRPartial ? " | PARTIAL SESSION BAR" : "") : not hourlyTRSupported ? "N/A | USE CHART TF <= 1D" : hourlyFromChartBarsSupported and not hourlyTFAligned ? "N/A | USE 1h-DIVISIBLE TF" : hourlyFromChartBarsSupported ? "N/A | BAR/PARENT MISALIGNMENT" : "N/A | 1h SOURCE PENDING"
+string chartTRTip = "Chart-TF trading range on " + tfText + ": current visible chart bar LOW-HIGH only. It updates with the live bar and changes automatically when the chart timeframe changes. It is not a " + str.tostring(momLen) + "-bar/12-bar lookback and not Wilder True Range. No line is drawn."
+string hourlyTRTip = "Hourly trading range for the active TradingView chart session (" + chartSessionName + "): RTH follows RTH, extended follows extended, and 24h follows 24h. On chart TF <= 1h it accumulates only observed aligned chart bars inside the current 1h parent. On 4h/1D charts it uses the latest available native 1h intrabar with lookahead_off and labels it 1h SNAPSHOT. No future hourly high/low is used; any shortened final session bar is labelled partial. No line is drawn."
+
+// One observation status, not repeated timeframe/live labels on every row.
+// `session.islastbar` refers to the selected named chart session, not always RTH.
+bool sourceBarUpdating = barstate.isrealtime
+bool reportedSelectedClose = session.islastbar and timenow >= time_close
+bool panelOffSession = reportedSelectedClose
+// Delay/staleness is a warning, never a missing-data gate. Pine cannot infer
+// the subscription or distinguish a delayed feed from a halted/stale feed here.
+int feedAgeBoundMs = na(localFeedEnd) ? na : math.max(0, timenow - localFeedEnd)
+bool feedTimeCheck = sourceBarUpdating and not na(feedAgeBoundMs) and feedAgeBoundMs > 90000
+bool viewLive = sourceBarUpdating and not panelOffSession and not feedTimeCheck
+bool largerChartSampling = timeframe.in_seconds(timeframe.main_period) > timeframe.in_seconds(signalTF)
+string observationState = panelOffSession ? (sourceBarUpdating ? "OFF SESSION | FEED VALUES" : "OFF SESSION | LAST VALUES") : feedTimeCheck ? "DELAYED / STALE | FEED VALUES" : viewLive ? "UPDATING | FEED VALUES" : "LAST CLOSED"
+string alertWarning = liveAlerts and alertMode == "Closed strategy bars" and not closedAlertSupported ? " | CLOSED ALERTS BLOCKED" : liveAlerts and not f_wall_fresh(strategyFeedStart, strategyFeedEnd, timenow) ? " | ALERTS PAUSED" : ""
+observationState += largerChartSampling ? " | LTF SNAPSHOT" : ""
+observationState += sameBasisMismatch ? " | BASIS CHECK" : alertWarning
+
+// Preserve last aligned CHART-TF flow values for off-session inspection.
+// Trigger-basis flow still powers RAW TRIGGER/DECISION internally, but the
+// supporting EST FLOW row follows the visible chart timeframe.
+var float lastChartDelta = na
+var float lastChartDeltaPct = na
+var float lastChartCVD = na
+var float lastChartChange = na
+var float lastChartChangePct = na
+var string lastChartFlowStatus = "NO SESSION HISTORY"
+var string lastChartDeltaStatus = "NO SESSION HISTORY"
+var string lastChartChangeStatus = "NO SESSION HISTORY"
+var int lastStrategyAt = na
+var int lastChartAt = na
+var int lastFlowAt = na
+if not na(strategyEnd)
+    lastStrategyAt := strategyEnd
+if not na(localEnd)
+    lastChartAt := localEnd
+if flowClockAligned
+    lastChartDelta := barDelta
+    lastChartDeltaPct := chartDeltaPct
+    lastChartCVD := sessionCVD
+    lastChartChange := cvdRecentChange
+    lastChartChangePct := chartChangePct
+    lastChartFlowStatus := flowStatus
+    lastChartDeltaStatus := deltaStatus
+    lastChartChangeStatus := changeStatus
+    lastFlowAt := flowAsOf
+
+bool useLastChartFlow = panelOffSession
+float displayDelta = useLastChartFlow ? lastChartDelta : barDelta
+float displayDeltaPct = useLastChartFlow ? lastChartDeltaPct : chartDeltaPct
+float displayCVD = useLastChartFlow ? lastChartCVD : sessionCVD
+float displayChange = useLastChartFlow ? lastChartChange : cvdRecentChange
+float displayChangePct = useLastChartFlow ? lastChartChangePct : chartChangePct
+string displayFlowStatus = useLastChartFlow ? lastChartFlowStatus : flowStatus
+string displayDeltaStatus = useLastChartFlow ? lastChartDeltaStatus : deltaStatus
+string displayChangeStatus = useLastChartFlow ? lastChartChangeStatus : changeStatus
+
+string actionBasisText = "CLOSED " + strategyTFText
+string topTrendText = f_trend_text(trendRegime, trendADX, trendDISpread, trendEMASlope, trendTF, trendStatus)
+color topTrendColor = f_trend_color(trendRegime)
+string triggerBasisText = largerChartSampling ? "LIVE " + strategyTFText + " SNAPSHOT" : "LIVE " + strategyTFText
+string topTriggerText = f_trigger_text(strategyDirection, strategyReady, strategyWhy, strategyMOMNorm, strategyDeltaPct, triggerBasisText)
+color topTriggerColor = f_trigger_color(strategyDirection, strategyReady)
+string topDecisionText = actionDirection == 1 ? "CALL | " + stableDecisionConfirm + " | " + actionBasisText : actionDirection == -1 ? "PUT | " + stableDecisionConfirm + " | " + actionBasisText : "WAIT | " + actionReason + " | " + actionBasisText
+color topDecisionColor = actionDirection != 0 ? f_action_color(actionDirection) : (str.contains(actionReason, "REVERSAL") or decisionDirection != 0 ? color.orange : color.gray)
+
+float strategyMOM6 = not na(strategyMOM) and not na(strategyPriorMOM) ? strategyMOM + strategyPriorMOM : na
+float strategyMOM6Prev = not na(strategyMPrev) and not na(strategyPriorMPrev) ? strategyMPrev + strategyPriorMPrev : na
+float strategyMomMoveBand = momMoveAtrFrac == 0 ? 0.0 : not na(strategyATR) ? math.max(syminfo.mintick, strategyATR * momMoveAtrFrac) : syminfo.mintick
+float strategyMomMoveRaw = strategyMOM - strategyMPrev
+float strategyMOM6MoveRaw = strategyMOM6 - strategyMOM6Prev
+float strategyMomArrowChange = na(strategyMomMoveRaw) ? na : math.abs(strategyMomMoveRaw) <= strategyMomMoveBand ? 0.0 : strategyMomMoveRaw
+float strategyMOM6ArrowChange = na(strategyMOM6MoveRaw) ? na : math.abs(strategyMOM6MoveRaw) <= strategyMomMoveBand ? 0.0 : strategyMOM6MoveRaw
+color strategyMOMColor = f_move_color(strategyMomArrowChange)
+color strategyMOM6Color = f_move_color(strategyMOM6ArrowChange)
+
+float chartDISpread = not na(plusDI) and not na(minusDI) and (plusDI + minusDI) > 0 ? (plusDI - minusDI) / (plusDI + minusDI) : na
+float chartAdxMoveRaw = adx - adxPrevious
+float chartAdxMove = na(chartAdxMoveRaw) ? na : math.abs(chartAdxMoveRaw) < 0.10 ? 0.0 : chartAdxMoveRaw
+color chartDmiColor = na(chartDISpread) ? color.gray : chartDISpread > 0 ? color.teal : chartDISpread < 0 ? color.red : color.gray
+string chartDmiTip = "DMI/ADX supporting context on the visible " + tfText + " chart. OVERALL TREND still uses confirmed " + trendTFText + "; this row does not override it."
+string chartEmaTip = "EMA" + str.tostring(emaLen) + " supporting context on the visible " + tfText + " chart. RAW TRIGGER/DECISION keep their independent trigger-TF EMA no-chase calculation."
+
+string updateTip = "SQ+ v2.8.4 | " + syminfo.tickerid + ". Active named chart session=" + chartSessionName + ". Overall trend=" + trendTFText + " previous completed bar; raw trigger=" + strategyTFText + " developing bar; DECISION=" + actionBasisText + " with " + str.tostring(reversalConfirmBars) + "-bar opposite-side hysteresis. Supporting dashboard rows and pane=" + tfText + " CHART context; only Trend/Trigger/Decision keep their independent bases. Session identity uses the selected-session ticker plus time_tradingday. Source-window identity, not timenow, controls calculation alignment. UPDATING does not certify exchange-real-time entitlement. Historical values are not described as current-market data."
+string statusTip = "Observation: " + observationState + ". " + updateTip + " Display zone=" + zone + ". Last trigger=" + f_time(lastStrategyAt) + "; chart=" + f_time(lastChartAt) + "; flow=" + f_time(lastFlowAt) + ". Native trigger minute=" + f_time(strategyFeedStart) + ".." + f_time(strategyFeedEnd) + "; RVOL source minute=" + f_time(volumeSourceStart) + ".." + f_time(volumeSourceEnd) + ". Window endpoints are not exchange last-tick timestamps. Wall-age lower bound=" + (na(feedAgeBoundMs) ? "N/A" : str.tostring(float(feedAgeBoundMs) / 60000.0, "0.0")) + " minutes."
+string trendTip = "OVERALL TREND uses the previous completed " + trendTFText + " bar from the active named chart session (" + chartSessionName + "). Intraday bars must have the full requested duration and the same time_tradingday as the current selected session; status=" + trendStatus + ". Therefore RTH warms up from the RTH open, extended from the extended-session open, and 24h from the 24h session open. A shortened final session fragment cannot masquerade as a full 1h/4h bar. DMI side is normalized as (+DI--DI)/(+DI+-DI); ADX enters at " + f_num(adxEnter) + " and exits below " + f_num(adxExit) + " to reduce threshold chatter. Minimum |DI spread|=" + f_percent(diSpreadMin) + ". Trend is a DECISION gate, while RAW TRIGGER remains visible when counter-trend. " + statusTip
+string triggerTip = "RAW TRIGGER on the developing " + strategyTFText + " bar. BULL requires MOM/ATR >= " + f_num(momAtrMin) + " and estimated Delta/bar-volume >= " + f_percent(deltaPctMin) + "; BEAR requires both below the negative thresholds. Estimated flow is participation context, not verified bid/ask aggressor order flow. " + strategyWhy + ". " + statusTip
+string decisionTip = "DECISION combines confirmation and CALL / PUT / WAIT. It uses only the previous completed " + strategyTFText + " trigger bar plus the confirmed overall trend, the preceding non-overlapping MOM block and EMA no-chase distance. RAW TRIGGER remains the live aggressive preview. After an accepted side, an opposite side needs " + str.tostring(reversalConfirmBars) + " consecutive completed trigger bars; the first opposite bar remains WAIT. State resets at each chart-selected trading session, so a prior-session decision cannot carry into the next selected-session open. A higher-timeframe trend changing to WAIT blocks new decisions but is not an automatic exit rule. EMA no-chase limit=" + f_num(maxEmaDistanceAtr) + " ATR. Research state only; not an order or position manager."
+string strategyMomTip = "Trigger-basis MOM remains internal to RAW TRIGGER/DECISION on " + strategyTFText + ". Supporting MOM rows follow the visible chart timeframe."
+string strategyMOM6Tip = "Trigger-basis MOM6 remains available in Data Window only. Dashboard MOM rows follow the visible chart timeframe; DECISION keeps the preceding non-overlapping block internally."
+string chartMomTip = "CHART MOM" + str.tostring(momLen) + " on " + tfText + ": " + f_price(localClose) + " - " + f_price(momRef) + ". This supporting row follows consecutive visible chart bars. When CHART TF differs from Trigger TF it may span chart-session boundaries; the official trigger remains independently session-strict. " + chartWhy + "."
+string chartMOM6Tip = "CHART MOM" + str.tostring(momContextLen) + " on " + tfText + ": close - close[" + str.tostring(momContextLen) + "]. It uses consecutive chart bars for display context, including across sessions when CHART TF differs from Trigger TF. DECISION still uses its separate session-strict trigger-TF non-overlapping confirmation block."
+string flowTip = (isIndex ? "NATIVE INDEX " + flowTicker + "; vendor reference volume only. " : "NATIVE " + flowTicker + ". ") + "Active named chart session=" + chartSessionName + "; CHART basis=" + tfText + "; estimator=" + flowEstimator + ". Range-weighted mode uses V*(close-open)/(high-low), clipped to +/-V; legacy mode uses whole-bar sign. Δ1 is the current chart parent-bar estimate; Δ" + str.tostring(cvdLen) + " is chart-basis context only. Session=" + displayFlowStatus + "; Δ1=" + displayDeltaStatus + "; Δ" + str.tostring(cvdLen) + "=" + displayChangeStatus + ". Not verified bid/ask aggressor CVD."
+string volumeTip = "Native chart-selected-session 1m source " + chartSessionTicker + "; named session=" + chartSessionName + "; RVOL basis=" + tfText + " " + rvolMode + "; median across " + str.tostring(rvolN) + " complete prior matching windows. It is chart context only and never enters TREND, RAW TRIGGER or DECISION. VWAP status=" + vwapStatus + "; RVOL status=" + rvolStatus + "."
+string rvolText = na(rvol) ? "N/A | " + rvolStatus : (volumeIsReference or panelOffSession or not sourceBarUpdating ? "LAST " : "") + f_num(rvol) + "x" + (str.contains(rvolStatus, "PREV BAR") ? " | PREV BAR" : str.contains(rvolStatus, "CLOSED SAMPLE") ? " | CLOSED SAMPLE" : "")
+string flowPrefix = useLastChartFlow or panelOffSession or not sourceBarUpdating ? "LAST " : ""
+string rvolLabel = (rvolMode == "Chart bar" ? "RVOL BAR " : "RVOL SESSION ") + tfText + (isIndex ? "* EST" : " EST")
+string dailyCombinedText = "P " + (pivotReady ? f_price(dailyP) : "N/A") + " | S1/R1 " + (pivotReady ? f_price(dailyS1) + "/" + f_price(dailyR1) : "N/A")
+string dailyCombinedTip = pivotTip + " Daily P/S1/R1 remain previous-day reference levels; they are separate from the two live trading-range rows."
+
+// Detailed provenance stays in tooltips; common status text stays compact.
+f_compact_status(string status) =>
+    status == "SOURCE COVERAGE NOT VERIFIED" ? "SESSION COVERAGE" : status == "SESSION START NOT OBSERVED" ? "PARTIAL HISTORY" : status == "INTERVAL COVERAGE NOT VERIFIED" ? "INTERVAL COVERAGE" : status == "INTERVAL START NOT OBSERVED" ? "PARTIAL INTERVAL" : status == "NO SOURCE HISTORY" ? "NO HISTORY" : status == "NO USABLE VOLUME" ? "NO VOLUME" : status == "ZERO SESSION VOLUME" ? "ZERO VOLUME" : status == "ZERO BAR VOLUME" ? "ZERO BAR VOL" : status
+
+// No VWAP end label: the only script price overlays are EMA20 and Pivot P.
+
+// Fixed allocation from input-only row flags; no intrabar row-count drift.
+int usedRows = 5 + (showSecondMOM ? 1 : 0) + (showFlow ? 1 : 0) + (showEMArow ? 1 : 0) + (showChartTRRow ? 1 : 0) + (showHourlyTRRow ? 1 : 0) + (showPivotRow ? 1 : 0) + (showRiskGuide ? 1 : 0) + (showRVOLrow ? 1 : 0)
+var table panel = table.new(panelPosition, 2, usedRows, bgcolor=chart.bg_color, frame_color=color.new(chart.fg_color, 65), frame_width=1, force_overlay=true)
+if barstate.islast
+    if showTable
+        int r = 0
+        f_row(panel, r, "OVERALL TREND", topTrendText, panelOffSession or feedTimeCheck ? color.gray : topTrendColor, trendTip)
+        r += 1
+        f_row(panel, r, "RAW TRIGGER", topTriggerText, sameBasisMismatch or panelOffSession or feedTimeCheck ? color.gray : topTriggerColor, triggerTip)
+        table.cell_set_bgcolor(panel, 1, r, color.new(sameBasisMismatch ? color.orange : topTriggerColor, 85))
+        r += 1
+        f_row(panel, r, "DECISION", topDecisionText, panelOffSession or feedTimeCheck ? color.gray : topDecisionColor, decisionTip)
+        table.cell_set_bgcolor(panel, 1, r, color.new(topDecisionColor, 84))
+        r += 1
+
+        f_row(panel, r, "DMI / ADX " + tfText + " CHART", na(adx) or na(chartDISpread) ? "WARMUP" : f_adx_strength(adx, chartAdxMove, plusDI, minusDI, chartDISpread), chartDmiColor, chartDmiTip)
+        r += 1
+        f_row(panel, r, "MOM" + str.tostring(momLen) + " " + tfText, f_mom_display(mom, momArrowChange) + " | /ATR " + f_ratio(chartMOMNorm), liveMOMColor, chartMomTip)
+        r += 1
+        if showSecondMOM
+            f_row(panel, r, "MOM" + str.tostring(momContextLen) + " " + tfText, f_mom_display(mom6, mom6ArrowChange), liveMOM2Color, chartMOM6Tip)
+            r += 1
+        if showFlow
+            bool hasDelta1 = not na(displayDelta)
+            bool hasContextChange = not na(displayChange)
+            string cvdBase = na(displayCVD) ? "CVD N/A | " + f_compact_status(displayFlowStatus) : "CVD " + f_vol(displayCVD)
+            string delta1Text = hasDelta1 ? "Δ1 " + f_vol(displayDelta) + " (" + f_percent(displayDeltaPct) + ")" : "Δ1 " + f_compact_status(displayDeltaStatus)
+            string contextText = hasContextChange ? "Δ" + str.tostring(cvdLen) + " " + f_vol(displayChange) + " (" + f_percent(displayChangePct) + ")" : "Δ" + str.tostring(cvdLen) + " " + f_compact_status(displayChangeStatus)
+            string cvdText = flowPrefix + cvdBase + " | " + delta1Text + " | " + contextText
+            color cvdColor = na(displayCVD) and not hasDelta1 and not hasContextChange ? color.gray : chart.fg_color
+            f_row(panel, r, "EST FLOW " + tfText + flowTableSuffix, cvdText, cvdColor, flowTip)
+            r += 1
+        if showEMArow
+            string emaPos = na(ema) ? "WARMUP" : f_price(ema) + " | PRICE " + (localClose > ema ? "ABOVE" : localClose < ema ? "BELOW" : "AT") + " | DIST " + f_ratio(localEMADistance) + " ATR"
+            color emaRowColor = na(localEMADistance) ? color.gray : math.abs(localEMADistance) > maxEmaDistanceAtr ? color.orange : emaColor
+            f_row(panel, r, "EMA " + str.tostring(emaLen) + " " + tfText, emaPos, emaRowColor, chartEmaTip)
+            r += 1
+        if showChartTRRow
+            f_row(panel, r, "TR CHART " + tfText, chartTRText, chartTRReady ? trRangeColor : color.gray, chartTRTip)
+            r += 1
+        if showHourlyTRRow
+            f_row(panel, r, "TR HOURLY 1h [" + chartSessionName + "]", hourlyTRText, hourlyTRReady ? trRangeColor : color.gray, hourlyTRTip)
+            r += 1
+        if showPivotRow
+            f_row(panel, r, "PIVOT DAILY", dailyCombinedText, pivotReady ? chart.fg_color : color.gray, dailyCombinedTip)
+            r += 1
+        if showRiskGuide
+            f_row(panel, r, "ATR DISTANCES", riskGuide, chart.fg_color, riskTip)
+            r += 1
+        if showRVOLrow
+            f_row(panel, r, rvolLabel, rvolText, chart.fg_color, volumeTip)
+            r += 1
+        if r != usedRows
+            runtime.error("Internal dashboard row allocation mismatch.")
+    else
+        table.clear(panel, 0, 0, 1, usedRows - 1)
+
+// Local chart MOM pane and supporting dashboard rows follow the visible chart TF.
+// They remain separate from independent Trend/Trigger/Decision calculations.
+var table paneBadge = table.new(position.top_left, 1, 2, bgcolor=color.new(chart.bg_color, 10))
+var label momEndLabel = na
+var label priorMomEndLabel = na
+if barstate.islast
+    if showPaneBadge
+        table.cell(paneBadge, 0, 0, "CHART MOM" + str.tostring(momLen) + " | " + f_mom_display(mom, momArrowChange), text_color=liveMOMColor, text_size=size.small, text_halign=text.align_left, tooltip=chartMomTip)
+        table.cell(paneBadge, 0, 1, showSecondMOM ? "CHART MOM" + str.tostring(momContextLen) + " | " + f_mom_display(mom6, mom6ArrowChange) : "", text_color=liveMOM2Color, text_size=size.small, text_halign=text.align_left, tooltip=chartMOM6Tip)
+        if momReady
+            if na(momEndLabel)
+                momEndLabel := label.new(bar_index + 2, mom, "MOM" + str.tostring(momLen) + " " + f_mom(mom), style=label.style_label_left, color=color.new(chart.bg_color, 12), textcolor=liveMOMColor, size=size.small)
+            else
+                label.set_xy(momEndLabel, bar_index + 2, mom)
+                label.set_text(momEndLabel, "MOM" + str.tostring(momLen) + " " + f_mom(mom))
+                label.set_textcolor(momEndLabel, liveMOMColor)
+        if showSecondMOM and priorMomReady
+            if na(priorMomEndLabel)
+                priorMomEndLabel := label.new(bar_index + 4, mom6, "MOM" + str.tostring(momContextLen) + " " + f_mom(mom6), style=label.style_label_left, color=color.new(chart.bg_color, 12), textcolor=liveMOM2Color, size=size.small)
+            else
+                label.set_xy(priorMomEndLabel, bar_index + 4, mom6)
+                label.set_text(priorMomEndLabel, "MOM" + str.tostring(momContextLen) + " " + f_mom(mom6))
+                label.set_textcolor(priorMomEndLabel, liveMOM2Color)
+    else
+        table.clear(paneBadge, 0, 0, 0, 1)
+    if not showPaneBadge or not momReady
+        if not na(momEndLabel)
+            label.delete(momEndLabel)
+            momEndLabel := na
+    if not showPaneBadge or not showSecondMOM or not priorMomReady
+        if not na(priorMomEndLabel)
+            label.delete(priorMomEndLabel)
+            priorMomEndLabel := na
+
+// Compact Data Window audit. Redundant source timestamps and internal
+// reference plots were removed in v2.7.2 to remain safely below the
+// TradingView 64-plot-count ceiling. Their calculations still power
+// the dashboard/tooltips and validation guards.
+plot(actionDirection, "DECISION CALL=1 WAIT=0 PUT=-1", display=display.data_window)
+plot(trendRegime, "Confirmed trend BULL=1 WAIT=0 BEAR=-1", display=display.data_window)
+plot(strategyDirection, "RAW trigger BULL=1 WAIT=0 BEAR=-1", display=display.data_window)
+plot(chartDirection, "Chart diagnostic direction 1/0/-1", display=display.data_window)
+plot(trendADX, "Confirmed trend ADX", display=display.data_window)
+plot(trendDISpread, "Confirmed normalized DI spread", display=display.data_window)
+plot(trendEMA, "Confirmed trend EMA", display=display.data_window)
+plot(trendEMASlope, "Confirmed trend EMA slope", display=display.data_window)
+plot(strategyMOM, "Trigger MOM3/current block", display=display.data_window)
+plot(strategyMOM6, "Trigger MOM6/cumulative context", display=display.data_window)
+plot(strategyPriorMOM, "Decision preceding non-overlapping MOM block", display=display.data_window)
+plot(strategyMOMNorm, "Trigger MOM / prior ATR", display=display.data_window)
+plot(strategyDelta, "Trigger estimated Delta 1", display=display.data_window)
+plot(strategyDeltaPct, "Trigger estimated Delta 1 / bar volume", display=display.data_window)
+plot(strategyChange, "Trigger estimated multi-bar Delta", display=display.data_window)
+plot(strategyChangePct, "Trigger estimated multi-bar Delta / volume", display=display.data_window)
+plot(strategyEMA, "Trigger EMA", display=display.data_window)
+plot(strategyEMADistance, "Trigger price distance from EMA / ATR", display=display.data_window)
+plot(strategyReady ? 1 : 0, "Trigger data ready", display=display.data_window)
+plot(decisionReady ? 1 : 0, "DECISION closed-trigger data ready", display=display.data_window)
+plot(barDelta, "Chart estimated Delta 1 diagnostic", display=display.data_window)
+plot(chartDeltaPct, "Chart estimated Delta 1 / volume diagnostic", display=display.data_window)
+plot(sessionCVD, "Chart session estimated CVD diagnostic", display=display.data_window)
+plot(cvdRecentChange, "Chart multi-bar estimated Delta diagnostic", display=display.data_window)
+plot(rvol, "Chart-basis RVOL median estimate", display=display.data_window)
+plot(sessionVWAP, "Native session VWAP reference", display=display.data_window)
+plot(chartTRLow, "Chart-TF current trading-range low", display=display.data_window)
+plot(chartTRHigh, "Chart-TF current trading-range high", display=display.data_window)
+plot(hourlyTRLow, "Current 1h trading-range low", display=display.data_window)
+plot(hourlyTRHigh, "Current 1h trading-range high", display=display.data_window)
+plot(dailyP, "Daily Traditional P", display=display.data_window)
+plot(dailyR1, "Daily Traditional R1", display=display.data_window)
+plot(dailyS1, "Daily Traditional S1", display=display.data_window)
+
+// Native TradingView compilation and live/reload checks are still required.
+// Saved alerts retain a snapshot of script/settings: recreate them for v2.8.4.
+// No API keys, broker integration, ETF fallback or hidden cross-symbol substitution.
