@@ -1,0 +1,1836 @@
+//@version=6
+indicator("Simple Quant+ v3.7.2 | Readable own-TF signals", shorttitle="SQ+3.7.2 R", overlay=false, behind_chart=false, scale=scale.right, precision=4, max_lines_count=2, max_labels_count=60, max_bars_back=1000, dynamic_requests=true)
+
+// v3.7.2: READABLE PANEL. Direction/episode/alert/plan calculations unchanged.
+// Trend -> Entry (status + no-chase; timestamp in tooltip only) -> SL/Exit -> primary indicators.
+// Whole-table default font: Small. Auto-sized cells expand with the selected font.
+// 20-session 15m SPY/QQQ markout comparison: mixed, NOT a proven trading edge.
+// Breakout remains reference, no-chase warning, Delta context. Optional gates
+// remain explicit. No universal improvement or full-month Delta test claimed.
+// RELEASE STATUS: source + Python regression reviewed; native Pine compilation
+// and provider-specific live/reload parity are NOT certified.
+// Default: own-TF DI/ADX + MOM3/MOM6 + EMA side produce direction.
+// Previous-bar breakout is reference; no-chase is a visible risk warning.
+// Both remain selectable universal signal filters, but are not secretly required.
+// Local DI/ADX is required by default; estimated Delta is REFERENCE. Optional
+// modes are UNIVERSAL, labelled, and fail closed on missing required evidence.
+// No data-derived "optimal" threshold or profitability claim is made.
+// Episodes re-arm only after structural MOM+EMA reset, not a failed breakout.
+// Last qualification, live freshness and alert issuance are separate states.
+// Recovery notifications need a NEW fresh qualifying close in a live episode.
+// Historical attachment never creates a pending recovery notification.
+// Overall Trend is REFERENCE ONLY: <=15m ->15m; above15m ->chart TF.
+// Signals: closed native OHLC -> own DI/ADX -> MOM3/prior ATR ->
+// cumulative MOM6 -> EMA side -> selected optional gates -> structural episode.
+// Default Delta policy is CONTEXT ONLY FOR EVERY SYMBOL. Optional required
+// Delta1 / Delta1+DeltaN uses native estimated flow and FAILS CLOSED when absent.
+// No index-specific entry rule, proxy volume, separate label path, or index alert.
+// One identical L/S plotshape pair and one direction-event alert path.
+// Direction signals are NOT risk-qualified plans, orders, option contracts or fills.
+// Optional legacy price guides remain a SEPARATE, instrument-aware module.
+// Guide quotas/size/expiry/manual position NEVER veto the direction markers.
+// Default MOM dashboard now shows the ACTIVE entry basis, explicitly tagged G.
+// Native-price MOM remains an optional DISPLAY-only comparison.
+// Missing native bars are not filled; shortened native candles cannot open signals.
+// No future HTF values or negative marker offset. Snapshot timestamps retained.
+// Trade/account risk, live execution and actual broker positions are NOT automated.
+// Native TradingView compile/replay/notification parity must still be verified.
+// This revision is a rules/architecture correction, NOT a proven return optimum.
+
+// ── 1. Decision architecture ───────────────────────────────────────────────
+momLen = input.int(3, "Setup MOM block: bars", minval=1, maxval=50, group="1. Decision", display=display.none, tooltip="Current setup block = close - close[momLen]. Optional previous-block confirmation uses the preceding non-overlapping block: close[momLen] - close[2*momLen]. The separate confirmation selector can change that rule.")
+showSecondMOM = input.bool(true, "Show cumulative MOM context (2 x block)", group="1. Decision", display=display.none, tooltip="Displays true cumulative MOM6 (close - close[6] at the default MOM3 setting). The preceding non-overlapping block is retained in the tooltip; it appears alongside cumulative MOM only when that different confirmation mode is selected.")
+momMoveAtrFrac = input.float(0.02, "MOM wording deadband: ATR fraction", minval=0.0, maxval=0.50, step=0.01, group="1. Decision", display=display.none, tooltip="Arrow/wording deadband only. Default MOM colors describe positive/negative sign; the optional Change color mode describes strengthening/fading. Neither color is a CALL/PUT instruction.")
+emaLen = input.int(20, "EMA length", minval=1, maxval=200, group="1. Decision", display=display.none)
+showHistogram = input.bool(false, "Optional MOM histogram", group="1. Decision", display=display.none)
+
+string signalTF = timeframe.main_period // SINGLE source of truth: user-selected chart TF.
+trendMode = input.string("Auto from chart", "REFERENCE Trend timeframe", options=["Auto from chart", "Manual"], group="1. Decision", display=display.none, tooltip="Reference only, never an entry/exit/plan veto. Auto: 5m->15m, 15m->15m, 30m->30m, 1h->1h. L/S always uses the native chart timeframe.")
+manualTrendTF = input.timeframe("15", "Manual Overall Trend TF", options=["1", "3", "5", "15", "30", "60", "120", "240", "1D", "1W", "1M"], group="1. Decision", display=display.none)
+reversalConfirmBars = input.int(1, "Opposite signal: qualifying closed bars", minval=1, maxval=3, group="1. Decision", display=display.none, tooltip="Default one completed own-TF qualification. Two or three require consecutive complete qualifications and deliberately delay reversals. Not optimized on returns.")
+momentumSessionMode = input.string("Auto: strict through 15m", "Original-MOM / Delta session policy", options=["Auto: strict through 15m", "Continuous chart bars", "Same session only"], group="1. Decision", display=display.none, tooltip="Original basis: Auto requires same-session MOM history through 15m. Gap-neutral basis instead keeps full 3/6-bar chart history, removing observed opening gaps. Delta rolling windows retain their selected session policy. Active displayed MOM follows ENTRY. Native-price comparison is display-only.")
+
+momAtrMin = input.float(0.10, "Minimum |MOM| / prior ATR", minval=0.0, maxval=2.0, step=0.01, group="1. Decision", display=display.none, tooltip="Normalized setup threshold. Research input, not a certified optimum.")
+deltaPctMin = input.float(0.08, "Minimum |estimated Delta| / bar volume", minval=0.0, maxval=1.0, step=0.01, group="1. Decision", display=display.none, tooltip="Participation threshold. Research input, not a certified optimum.")
+adxEnter = input.float(20.0, "Trend ADX enter", minval=1.0, maxval=100.0, step=0.5, group="1. Decision", display=display.none)
+adxExit = input.float(17.0, "Trend ADX exit", minval=1.0, maxval=100.0, step=0.5, group="1. Decision", display=display.none)
+diSpreadMin = input.float(0.08, "Minimum normalized DI spread", minval=0.0, maxval=1.0, step=0.01, group="1. Decision", display=display.none)
+maxEmaDistanceAtr = input.float(1.25, "No-chase distance from trigger EMA: ATR", minval=0.1, maxval=5.0, step=0.05, group="1. Decision", display=display.none)
+confirmationMode = input.string("Cumulative MOM", "Decision momentum confirmation", options=["Previous block (baseline)", "Cumulative MOM", "Off"], group="1. Decision", display=display.none, tooltip="Default: MOM3 and cumulative MOM6 must have the same sign. Previous block is a stricter, DIFFERENT test: close[3]-close[6]. All calculations use the selected active price basis and own chart TF.")
+trendPriceMode = input.string("DMI / ADX baseline", "Overall Trend price coherence", options=["DMI / ADX baseline", "Require EMA side + slope (research)"], group="1. Decision", display=display.none, tooltip="Baseline retains v2.9.0. Research mode also requires the completed trend close and EMA slope to agree with DI direction. Not a tested superior setting.")
+entryPriceMode = input.string("Signal agreement (baseline)", "Universal entry price trigger", options=["Signal agreement (baseline)", "Break previous chart bar (research)"], group="1. Decision", display=display.none, tooltip="Default displays previous-bar breakout as REFERENCE, not a mandatory directional-label delay. Selecting Break previous chart bar requires a completed own-TF close above the prior high for L, below prior low for S, with adjacent same-session bars. Same rule for every symbol.")
+noChasePolicy = input.string("Warning only", "No-chase role in directional signals", options=["Warning only", "Required filter"], group="1. Decision", display=display.none, tooltip="Warning only: L/S and ENTRY describe direction even when extended; ENTRY and alerts explicitly say EXTENDED / NO CHASE. This is NOT permission to enter. Optional price-plan limits still enforce their frozen no-chase cap. Required filter restores the old label veto at 1.25 prior ATR. Universal for every symbol.")
+bool requireNoChase = noChasePolicy == "Required filter"
+requireEMASide = input.bool(true, "Require own-TF EMA side (FILTER)", group="1. Decision", display=display.none, tooltip="L requires close above the active own-TF EMA; S below. Overall Trend is not consulted.")
+
+
+
+ownDmiPolicy = input.string("Require DI + ADX", "Own-TF DI / ADX confirmation", options=["Reference only", "Require DI", "Require DI + ADX"], group="1. Decision", display=display.none, tooltip="Release default uses OWN-TF DI + ADX to define a confirmed direction, not a profitable entry. Breakout and no-chase are not simultaneously forced on directional labels. The limited sample does not establish optimality. Required DI compares normalized (+DI - -DI)/(+DI + -DI). Required ADX uses own-TF enter/hold hysteresis; an ADX rising arrow is NEVER an additional condition. No reference Trend value is consulted.")
+ownDiSpreadMin = input.float(0.08, "Own-TF minimum normalized DI spread", minval=0.0, maxval=1.0, step=0.01, group="1. Decision", display=display.none)
+ownAdxEnter = input.float(20.0, "Own-TF ADX enter (optional filter)", minval=1, maxval=100, step=0.5, group="1. Decision", display=display.none)
+ownAdxExit = input.float(17.0, "Own-TF ADX hold (optional filter)", minval=1, maxval=100, step=0.5, group="1. Decision", display=display.none)
+showManualExitMarkers = input.bool(true, "Show manual-position EXIT markers", group="7. Manual position", display=display.none)
+alertGraceSeconds = input.int(90, "Fresh closed-event alert grace: seconds", minval=1, maxval=300, group="5. Alerts", display=display.none)
+recoveryAlerts = input.bool(true, "Recover unissued live episode on next fresh qualification", group="5. Alerts", display=display.none, tooltip="A late original close can arm recovery, but only a later fresh fully qualifying close can issue it, using that later close and labelled RECOVERY. No historical-attachment replay, old price resend, or delivery acknowledgement.")
+
+// Operational default: REFERENCE Trend + gap-neutral MOM/EMA. Not optimized.
+entryBasis = input.string("Gap-neutral MOM + EMA", "Entry price/momentum basis", options=["Original", "Gap-neutral MOM", "Gap-neutral MOM + EMA"], group="1. Decision", display=display.none, tooltip="Original retains same-session entry warmup. Gap-neutral MOM uses the full 3/6-bar history with observed opening gaps subtracted, and therefore may include earlier-session INTRADAY moves but not their opening jumps. The EMA variant also translates the smoothed gap-neutral price back to current price units for the no-chase test. Prior ATR is retained; Delta follows the universal policy. Overall Trend is reference-only. Optional risk plans remain separate. The default Gap-neutral MOM + EMA is adopted for intraday session behavior, NOT selected by a completed market backtest. On non-intraday charts Original is used.")
+showDirectionMarkers = input.bool(true, "Show universal L / S direction markers", group="4. Display", display=display.none, tooltip="One marker on each new qualified direction episode. The same shape, size and meaning apply to every symbol. Price-plan checks do not suppress these markers.")
+
+// ── 2. Volume context ───────────────────────────────────────────────────────
+sessionZone = input.string("America/New_York", "Display time zone", options=["America/New_York", "America/Chicago", "Europe/London", "Etc/UTC", "Exchange"], group="2. Volume", display=display.none, tooltip="Display formatting only. Calculation sessions always follow the active TradingView chart session: RTH, extended, 24h or the selected provider-defined subsession.")
+flowEstimator = input.string("Range-weighted", "Estimated Delta method", options=["Range-weighted", "Whole-bar sign (legacy)"], group="2. Volume", display=display.none, tooltip="Range-weighted uses V*(close-open)/(high-low), clipped to +/-V. Legacy assigns the whole 1m volume to one sign. Neither is bid/ask aggressor flow.")
+rvolMode = input.string("Chart bar", "RVOL interval", options=["Chart bar", "Session cumulative"], group="2. Volume", display=display.none)
+rvolDays = input.int(20, "RVOL prior sessions", minval=5, maxval=30, group="2. Volume", display=display.none)
+minSamples = input.int(10, "RVOL minimum samples", minval=3, maxval=30, group="2. Volume", display=display.none)
+showFlow = input.bool(true, "Show estimated Delta1 / Delta3 row", group="2. Volume", display=display.none, tooltip="Delta1 = latest selected chart candle; Delta3 = sum of the latest three by default. The second label follows the context-bars input. Session CVD is not shown. This display toggle does not change the universal Delta policy.")
+deltaContextBars = input.int(3, "Estimated Delta window bars (default 3)", minval=2, maxval=100, group="2. Volume", display=display.none, tooltip="N selected-chart candles: 5m x3, 15m x3, etc. DeltaN% is summed estimated signed volume divided by summed source volume. Context by default; required only under universal Require Delta1 + DeltaN. Missing component coverage restarts warmup. A fully covered shortened candle may be displayed, but cannot start a full-TF direction event.")
+bool volumeAllowed = true // A missing/zero vendor volume stays N/A; never an entry veto in Context only.
+bool flowAllowed = true // Native chart symbol only. No index-specific source or proxy.
+flowPolicy = input.string("Context only", "Universal estimated Delta policy", options=["Context only", "Require Delta1", "Require Delta1 + DeltaN"], group="1. Decision", display=display.none, tooltip="Same policy for EVERY symbol. Context only never gates a signal on volume availability/sign. Required modes need verified native one-minute source coverage; missing flow means WAIT, never a symbol-specific bypass. Delta is a candle-based estimate, not bid/ask aggressor flow.")
+bool requireFlow = flowPolicy != "Context only"
+bool requireRollingFlow = flowPolicy == "Require Delta1 + DeltaN"
+signalAlerts = input.bool(true, "Enable universal direction notifications", group="5. Alerts", display=display.none, tooltip="Also enable the master notification switch and create a TradingView alert. Notification only, not a price-plan/order/fill.")
+
+// ── 3. Range, pivots and structure ─────────────────────────────────────────
+diLen = input.int(14, "DMI length", minval=2, maxval=100, group="3. Structure", display=display.none)
+adxSmooth = input.int(14, "ADX smoothing", minval=2, maxval=100, group="3. Structure", display=display.none)
+showChartTRRow = input.bool(true, "Show multi-bar closed RANGE", group="3. Structure", display=display.none, tooltip="Actual lowest low / highest high over N completed full-duration RANGE candles. Not a single chart candle, an expected future range, or Wilder True Range. This row ALWAYS uses closed data, even in Live preview.")
+rangeTFMode = input.string("Auto: minimum 15m", "RANGE timeframe", options=["Auto: minimum 15m", "Chart TF", "Manual"], group="3. Structure", display=display.none, tooltip="Auto: charts below 15m use 15m; 15m and higher use the chart TF. Example: 5m -> 15m, 15m -> 15m, 1h -> 1h. This changes RANGE only. Manual TF below the chart is explicitly clamped to the chart TF; the row always labels the effective TF.")
+manualRangeTF = input.timeframe("60", "Manual RANGE TF", options=["1", "3", "5", "15", "30", "60", "120", "240", "1D", "1W", "1M"], group="3. Structure", display=display.none)
+rangeLookback = input.int(4, "RANGE lookback: completed source bars", minval=1, maxval=100, group="3. Structure", display=display.none, tooltip="Default 4: 15m x4 = 60 nominal traded minutes; 1h x4 = 4 nominal traded hours. These are N complete candles, NOT necessarily N contiguous wall-clock intervals. Session gaps and skipped partial candles are disclosed in the tooltip. Use 1 for a single source candle.")
+rangeSessionMode = input.string("Across sessions", "RANGE session policy", options=["Across sessions", "Same session only"], group="3. Structure", display=display.none, tooltip="Across sessions retains the last N complete source bars, possibly including the previous trading session. Same session only resets intraday RANGE at the selected session's start. Insufficient history stays WARMUP; the script never widens prices artificially.")
+showPivotRow = input.bool(true, "Show previous chart-bar P / S1-R1 row", group="3. Structure", display=display.none)
+trRangeColor = input.color(color.rgb(40, 110, 220), "TR row color", group="3. Structure", display=display.none)
+
+// ── 4. Visuals ──────────────────────────────────────────────────────────────
+showEMA = input.bool(true, "Draw chart EMA", group="4. Display", display=display.none)
+showPivots = input.bool(true, "Draw previous chart-bar Pivot P", group="4. Display", display=display.none)
+pivotPColor = input.color(color.rgb(190, 145, 35), "Chart Pivot P color", group="4. Display", display=display.none)
+showTable = input.bool(true, "Show dashboard", group="4. Display", display=display.none)
+showPaneBadge = input.bool(true, "Show chart MOM badge", group="4. Display", display=display.none)
+showEMArow = input.bool(true, "Show chart-TF EMA row", group="4. Display", display=display.none)
+showRVOLrow = input.bool(true, "Show chart-TF RVOL row", group="4. Display", display=display.none)
+momLineWidth = input.int(3, "MOM line width", minval=1, maxval=5, group="4. Display", display=display.none)
+tableLocation = input.string("Top right", "Dashboard position", options=["Top right", "Middle right", "Bottom right", "Top left", "Bottom left"], group="4. Display", display=display.none)
+tableSize = input.string("Small", "Dashboard font size", options=["Tiny", "Small", "Normal"], group="4. Display", display=display.none)
+emaColor = input.color(color.orange, "EMA", group="4. Display", display=display.none)
+compactLabels = input.bool(true, "Compact labels and spacing", group="4. Display", display=display.none, tooltip="Smaller titles and cell spacing only. Full formulas, values, timestamps and failure reasons remain in hover tooltips. Chart-provider bid/ask, price-axis labels and other scripts are not controlled by this setting.")
+
+dashboardMode = input.string("Closed snapshot", "Dashboard evidence", options=["Closed snapshot", "Live preview"], group="4. Display", display=display.none, tooltip="Default: analytical rows explain the last closed chart event. Live preview changes detail rows only; ENTRY and RANGE remain closed. RANGE has its own labelled timeframe/lookback. Hover rows for timestamps and data diagnostics.")
+momDisplayBasis = input.string("Active entry basis", "Displayed MOM basis", options=["Active entry basis", "Native price comparison"], group="4. Display", display=display.none, tooltip="Default displays the same gap-adjusted or original MOM values used by ENTRY. Native comparison is display-only and labelled NATIVE. Neither changes execution rules.")
+momColorMode = input.string("Sign", "MOM colour meaning", options=["Sign", "Change"], group="4. Display", display=display.none)
+
+// ── 5. Indicator notifications ──────────────────────────────────────────────
+liveAlerts = input.bool(false, "Master: enable closed-bar notifications", group="5. Alerts", display=display.none, tooltip="Off by default. Enable this plus the selected direction/plan/manual notification switch, then create a TradingView alert. Notifications only: no broker orders, account permissions or fills.")
+alertTarget = input.string("Both", "Optional plan / manual notifications", options=["Both", "Entry plans", "Manual exits"], group="5. Alerts", display=display.none, tooltip="Controls the separate price-plan/manual-exit notification paths. Universal direction notifications have their own switch; all require the master switch.")
+
+// ── 6. Entry price guides — no order submission or invented fills ────────────
+enableEntryGuides = input.bool(false, "Enable SEPARATE frozen price-plan references", group="6. Entry guides", display=display.none, tooltip="Off by default. Optional legacy instrument-aware sizing/price plans, never a veto on universal L/S. SPY/QQQ share guides and MES/MNQ contract references remain limited to their supported sessions/TFs. No order, fill or account risk validation.")
+guideInstrument = input.string("Auto from chart", "Price-guide instrument", options=["Auto from chart", "QQQ / SPY", "MES / MNQ"], group="6. Entry guides", display=display.none, tooltip="Selects eligibility, NOT a replacement data symbol. For MES or MNQ prices, open the actual MES or MNQ chart. An SPX chart never produces converted futures levels.")
+
+guideSizingPolicy = input.string("Enforce reference size", "Reference-sizing policy", options=["Enforce reference size", "Price references only"], group="6. Entry guides", display=display.none, tooltip="Default preserves the old requirement that manual reference risk/size supports >=1 share/contract. Price references only must be explicitly selected; then every plan is labelled REF and is NOT size-qualified. Neither mode reads your account or guarantees available margin.")
+guideMaxContracts = input.int(1, "Maximum reference MES/MNQ contracts", minval=1, maxval=100, group="6. Entry guides", display=display.none)
+guideFuturesFee = input.float(0.75, "Futures fee USD per contract per side (assumption)", minval=0, maxval=100, step=0.05, group="6. Entry guides", display=display.none, tooltip="Replace this illustrative sizing assumption with your broker's total fees. Not a quote or a verified fee schedule. Futures sizing uses USD per point and this fee, not the ETF basis-point fee.")
+guideFuturesMargin = input.float(0.0, "Broker margin USD/contract (manual; 0=not checked)", minval=0, group="6. Entry guides", display=display.none, tooltip="Optional additional reference cap: capital x exposure% / this manual margin amount. Zero means margin is NOT checked, not that margin is zero. Risk-based sizing and maximum contracts still apply. Broker margin, buying power and liquidation rules are not available to this indicator.")
+guideEquity = input.float(10000.0, "Reference capital USD (manual; NOT account equity)", minval=1, group="6. Entry guides", display=display.none)
+guideRiskPct = input.float(0.25, "Maximum reference risk per plan: %", minval=0.01, maxval=1.0, step=0.01, group="6. Entry guides", display=display.none)
+guideExposurePct = input.float(20.0, "Reference cash / margin allocation cap: %", minval=1, maxval=100, group="6. Entry guides", display=display.none)
+guideMaxShares = input.int(100, "Maximum reference whole shares", minval=1, maxval=10000, group="6. Entry guides", display=display.none)
+guideMaxPlans = input.int(5, "Maximum accepted guide plans per session", minval=1, maxval=20, group="6. Entry guides", display=display.none, tooltip="Counts accepted price guides, not trades. This indicator has no realised PnL, account-level daily-loss lock or broker-position reconciliation. Those require the separate strategy or an execution service.")
+guideEntryAtr = input.float(0.10, "Limit cap/floor allowance: prior chart ATR", minval=0, maxval=0.5, step=0.01, group="6. Entry guides", display=display.none, tooltip="BUY LIMIT cap = min(signal close + allowance x prior ATR, EMA + no-chase x ATR), rounded down to a tick. SELL LIMIT floor is the symmetric max, rounded up. This is NOT a buy-stop/sell-stop breakout trigger; execution can differ or never occur.")
+guideExpiryBars = input.int(1, "Unfilled guide expires after chart bars", minval=1, maxval=3, group="6. Entry guides", display=display.none, tooltip="A new plan is valid during subsequent chart bars, not inside its signal candle. Expiry is checked at chart closes; opening a later bar after a gap also hides an obsolete plan. No order or timer is created.")
+guideStopBars = input.int(3, "Structural stop lookback: chart bars", minval=1, maxval=20, group="6. Entry guides", display=display.none)
+guideMinStopAtr = input.float(1.0, "Minimum stop offset from signal close: prior ATR", minval=0.25, maxval=3, step=0.05, group="6. Entry guides", display=display.none)
+guideMaxStopAtr = input.float(2.5, "Reject planned entry-stop distance above ATR", minval=0.5, maxval=6, step=0.1, group="6. Entry guides", display=display.none)
+guideTargetR = input.float(2.0, "Target: planned risk multiple", minval=1, maxval=5, step=0.25, group="6. Entry guides", display=display.none)
+guideHoldBars = input.int(6, "Manual-position holding threshold: chart durations", minval=1, maxval=50, group="6. Entry guides", display=display.none, tooltip="Six durations on a 5m chart is 30 minutes from the manual fill time. Checked at closed candles. A time warning cannot submit or confirm an exit.")
+guideOppositeBars = input.int(2, "Manual exit: opposing RAW closed bars (0=off)", minval=0, maxval=3, group="6. Entry guides", display=display.none)
+guideFlattenMinutes = input.int(5, "Session-end warning lead: minutes", minval=1, maxval=30, group="6. Entry guides", display=display.none, tooltip="Warning at the last scheduled chart close on/before native session end minus this lead, or immediately at a later close if none occurred. Example: a 15:55 cutoff on 15m is checked at 15:45. Not a wall-clock timer or an order. Actual lead can be longer; verify early-close sessions.")
+string guideTrendExitMode = "Off (baseline)" // Overall Trend is reference-only, including manual exits.
+guideStrictPending = input.bool(false, "Withdraw guide if full qualification is lost", group="6. Entry guides", display=display.none, tooltip="Off retains baseline expiry, RAW, data and stop checks. On additionally withdraws an unfilled guide when the pre-reversal-confirmation candidate is no longer aligned. This is not broker cancellation.")
+guideEventPolicy = input.string("Known-data episodes", "Same-side plan event policy", options=["Known-data episodes", "Legacy transitions (comparison)"], group="6. Entry guides", display=display.none, tooltip="Default: only a fully known, non-qualifying closed event may reset a same-side episode. Missing data never rearms it. Each episode accepts at most one plan; price/size rejections may be retried at later fresh closes until the first plan is accepted. Legacy is for controlled comparisons, not a preferred setting.")
+signalRearmBars = input.int(2, "Signal episode: structural reset closes", minval=1, maxval=5, group="1. Decision", display=display.none, tooltip="Re-arm only after the selected number of complete known closes BOTH lose the episode MOM direction and cross to the opposite EMA side. Failed breakout, no-chase, Delta or ADX alone never re-arm. Missing data breaks reset counting but preserves the episode. Opposite qualified direction starts its own episode.")
+guideSizingCommissionBp = input.float(1.0, "Sizing cushion: basis points per side", minval=0, maxval=20, step=0.25, group="6. Entry guides", display=display.none)
+guideSizingSlipTicks = input.int(1, "Sizing cushion: ticks per side", minval=0, maxval=20, group="6. Entry guides", display=display.none)
+showGuideLevels = input.bool(true, "Draw current guide / manual stop and target", group="6. Entry guides", display=display.none)
+showEntryMarkers = input.bool(false, "Show separate accepted-plan diamonds", group="6. Entry guides", display=display.none, tooltip="Optional blue diamonds are accepted unfilled price plans, NOT L/S signals or fills. The universal L/S markers have a separate display toggle.")
+showExitRow = input.bool(true, "Show combined SL / TP / Exit row", group="6. Entry guides", display=display.none)
+if barstate.isfirst and guideMaxStopAtr <= guideMinStopAtr
+    runtime.error("Guide maximum stop ATR must exceed minimum stop ATR.")
+
+// ── 7. Optional manual position — never inferred from a signal or price touch ─
+manualPosition = input.string("Flat / not tracking", "Your position", options=["Flat / not tracking", "Long", "Short"], group="7. Manual position", display=display.none, tooltip="Default Flat: SL / Exit displays NO POSITION, or an active PLAN ONLY with its existing SL/TP. No position is inferred from a direction label. After an actual fill, enter symbol, side, fill time, fill price, stop and target. An indicator cannot read an Alpaca or TradingView broker position. Reset to Flat after closing; warnings do not change your declared position.")
+manualSymbol = input.symbol("NASDAQ:QQQ", "Position symbol (must match this chart)", group="7. Manual position", display=display.none)
+manualFillTime = input.time(0, "Actual fill date/time (required; 1970 means unset)", group="7. Manual position", display=display.none, tooltip="Use the actual fill time shown in your broker. Input time follows TradingView's time widget; the displayed guide time uses the script's display zone. History must include this candle. The first partly elapsed entry candle uses CLOSE ONLY for price checks, avoiding pre-entry highs and lows.")
+manualFillPrice = input.float(0.0, "Actual average fill price", minval=0, group="7. Manual position", display=display.none)
+manualStop = input.float(0.0, "Your fixed stop price (required)", minval=0, group="7. Manual position", display=display.none)
+manualTarget = input.float(0.0, "Your fixed target price (required)", minval=0, group="7. Manual position", display=display.none, tooltip="Enter actual intended price levels, not a new signal's changing levels. Both stop and target in one candle means ordering is unknown, not a winning fill. Price exits are chart-close observations, not intrabar protective orders.")
+
+string panelPosition = tableLocation == "Middle right" ? position.middle_right : tableLocation == "Bottom right" ? position.bottom_right : tableLocation == "Top left" ? position.top_left : tableLocation == "Bottom left" ? position.bottom_left : position.top_right
+string panelTextSize = tableSize == "Tiny" ? size.tiny : tableSize == "Normal" ? size.normal : size.small
+string zone = sessionZone == "Exchange" ? syminfo.timezone : sessionZone
+string chartSessionName = syminfo.session
+string chartSessionTicker = ticker.modify(syminfo.tickerid, chartSessionName)
+int activeSessionId = time_tradingday
+float signalSeconds = timeframe.in_seconds(signalTF)
+float hostSeconds = signalSeconds
+string autoTrendTF = signalSeconds <= 900 ? "15" : signalTF
+string trendTF = trendMode == "Auto from chart" ? autoTrendTF : manualTrendTF
+int momContextLen = momLen * 2
+bool chartIntraday = timeframe.isminutes
+bool chartSupported = (timeframe.isminutes and timeframe.multiplier >= 1 and timeframe.multiplier <= 1440) or (timeframe.isdaily and timeframe.multiplier == 1)
+bool strictSessionMOM = momentumSessionMode == "Same session only" or (momentumSessionMode == "Auto: strict through 15m" and signalSeconds <= 900)
+
+
+
+bool requirePriceBreak = entryPriceMode == "Break previous chart bar (research)"
+
+
+string flowTicker = chartSessionTicker
+
+bool useClosedView = dashboardMode == "Closed snapshot"
+string requestedRangeTF = rangeTFMode == "Manual" ? manualRangeTF : rangeTFMode == "Chart TF" ? signalTF : signalSeconds < 900 ? "15" : signalTF
+bool rangeTFClamped = timeframe.in_seconds(requestedRangeTF) < signalSeconds
+string rangeTF = rangeTFClamped ? signalTF : requestedRangeTF
+float rangeSeconds = timeframe.in_seconds(rangeTF)
+int rangeExpectedMs = int(rangeSeconds * 1000.0)
+bool rangeIntraday = rangeSeconds < 86400
+
+if barstate.isfirst
+    if minSamples > rvolDays
+        runtime.error("RVOL minimum samples cannot exceed history length.")
+    if adxExit >= adxEnter or ownAdxExit >= ownAdxEnter
+        runtime.error("ADX hold/exit must be below its enter threshold.")
+    if not chart.is_standard
+        runtime.error("Use standard time-based Candles or Bars, not synthetic charts.")
+    if not (timeframe.isseconds or timeframe.isminutes or timeframe.isdaily or timeframe.isweekly or timeframe.ismonthly)
+        runtime.error("Use a time-based chart, not a tick-interval chart.")
+
+// Native selected-session endpoint integrity. Provider islastbar follows RTH,
+// extended/named sessions and their actual final shortened candle. An observed
+// 15:35 close is NOT accepted as session close merely because data stops there.
+// Provider metadata itself must be checked in TradingView Replay; unavailable
+// endpoint evidence deliberately restarts history rather than inventing a gap.
+bool nativeSessionChanged = chartIntraday and not na(time_tradingday[1]) and time_tradingday != time_tradingday[1]
+bool nativePriceOK = not na(open) and not na(high) and not na(low) and not na(close) and high >= math.max(open, close) and low <= math.min(open, close) and high >= low
+bool verifiedSessionBridge = nativeSessionChanged and session.isfirstbar and session.islastbar[1] and nativePriceOK and not na(close[1]) and not na(time_close[1]) and time >= time_close[1]
+bool nativeBrokenJoin = chartIntraday and not na(time[1]) and (nativeSessionChanged ? not verifiedSessionBridge : time != time_close[1])
+var int priceEpoch = 0
+var int cleanPriceBars = 0
+var float researchGapOffset = 0.0
+if nativeBrokenJoin or not nativePriceOK
+    priceEpoch += 1
+    cleanPriceBars := 0
+    researchGapOffset := 0.0
+if verifiedSessionBridge
+    researchGapOffset += open - close[1]
+cleanPriceBars := nativePriceOK ? cleanPriceBars + 1 : 0
+float gapNeutralPrice = nativePriceOK ? close - researchGapOffset : na
+var float gapEMAAxis = na
+if nativePriceOK
+    gapEMAAxis := na(gapEMAAxis) or nativeBrokenJoin or priceEpoch != nz(priceEpoch[1]) ? gapNeutralPrice : (2.0 / (emaLen + 1.0)) * gapNeutralPrice + (1.0 - 2.0 / (emaLen + 1.0)) * gapEMAAxis
+else
+    gapEMAAxis := na
+float gapNeutralEMA = cleanPriceBars >= emaLen ? gapEMAAxis + researchGapOffset : na
+bool useGapMOM = chartIntraday and entryBasis != "Original"
+bool useGapEMA = chartIntraday and entryBasis == "Gap-neutral MOM + EMA"
+string nativeHistoryState = nativeBrokenJoin ? "SESSION END / CLOCK UNVERIFIED; RESTART" : cleanPriceBars < emaLen and useGapEMA ? "EMA RESTART " + str.tostring(cleanPriceBars) + "/" + str.tostring(emaLen) : "OK"
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+f_num(float v) =>
+    na(v) ? "N/A" : str.tostring(v, "0.00")
+f_mom(float v) =>
+    na(v) ? "N/A" : v != 0 and math.abs(v) < 0.00000001 ? (v > 0 ? "+<1e-8" : "-<1e-8") : (v > 0 ? "+" : "") + str.tostring(v, "0.00######")
+f_price(float v) =>
+    na(v) ? "N/A" : str.tostring(v, format.mintick)
+f_vol(float v) =>
+    na(v) ? "N/A" : (v > 0 ? "+" : "") + str.tostring(v, format.volume)
+f_ratio(float v) =>
+    na(v) ? "N/A" : (v > 0 ? "+" : "") + str.tostring(v, "0.00")
+f_percent(float v) =>
+    na(v) ? "N/A" : (v > 0 ? "+" : "") + str.tostring(v * 100.0, "0.0") + "%"
+f_tf_text(string tf) =>
+    tf == "60" ? "1h" : tf == "120" ? "2h" : tf == "240" ? "4h" : str.contains(tf, "D") or str.contains(tf, "W") or str.contains(tf, "M") or str.contains(tf, "S") ? tf : tf + "m"
+f_tf_caption(string tf) =>
+    not na(str.tonumber(tf)) ? tf + " min" : tf
+f_compact_reason(string reason) =>
+    string txt = str.replace_all(reason, "SHORT NATIVE BAR ", "SHORT BAR ")
+    txt := str.replace_all(txt, "; NO NEW ENTRY", "")
+    txt := str.replace_all(txt, "WAIT FOR PREVIOUS CHART-BAR BREAK", "PREV BAR BREAK")
+    txt := str.replace_all(txt, "REQUIRED OWN DI / ADX NOT ALIGNED", "DI / ADX NOT ALIGNED")
+    txt := str.replace_all(txt, "REQUIRED OWN DI / ADX DATA MISSING", "DI / ADX DATA MISSING")
+    txt := str.replace_all(txt, "OWN-TF EMA SIDE OPPOSES SIGNAL", "EMA SIDE OPPOSES")
+    txt := str.replace_all(txt, "CURRENT SESSION WARMUP", "SESSION WARMUP")
+    txt
+f_short_status(string state) =>
+    str.contains(state, "ZERO") or str.contains(state, "VOLUME") ? "VOLUME" : str.contains(state, "SAMPLES") ? state : str.contains(state, "WARMUP") ? "WARMUP" : str.contains(state, "START") ? "START" : str.contains(state, "INCOMPLETE") or str.contains(state, "COVERAGE") or str.contains(state, "MINUTE") ? "WINDOW" : str.contains(state, "OFF") ? "OFF" : str.contains(state, "SYNC") or str.contains(state, "ALIGNED") ? "SYNC" : "SOURCE"
+f_mom_state(float momValue, float move) =>
+    na(momValue) ? "WARMUP" : na(move) ? "CHANGE WARMUP" : move > 0 ? (momValue < 0 ? "↑ RECOVERING" : momValue > 0 ? "↑ STRENGTHENING" : "↑ IMPROVING") : move < 0 ? (momValue > 0 ? "↓ FADING" : momValue < 0 ? "↓ DETERIORATING" : "↓ WEAKENING") : "→ FLAT"
+f_mom_display(float momValue, float move) =>
+    f_mom(momValue) + " | " + f_mom_state(momValue, move)
+f_bias(int d) =>
+    d == 1 ? "BULL" : d == -1 ? "BEAR" : "WAIT"
+f_color(int d) =>
+    d == 1 ? color.teal : d == -1 ? color.red : color.gray
+f_move_color(float d) =>
+    na(d) ? color.gray : d > 0 ? color.green : d < 0 ? color.red : color.gray
+f_direction_text(int direction, bool ready, string why) =>
+    not ready ? (why == "OFF SESSION" ? "OFF SESSION" : "WAIT | " + why) : direction == 1 ? "RAW BULL" : direction == -1 ? "RAW BEAR" : "WAIT | " + why
+f_trend_text(int regime, float adxValue, float spread, float emaSlope, string tf, string status) =>
+    string slopeTxt = na(emaSlope) ? "" : emaSlope > 0 ? " | EMA↑" : emaSlope < 0 ? " | EMA↓" : " | EMA→"
+    status != "OK" ? "WAIT | " + f_tf_text(tf) + " " + status : regime == 1 ? "BULL | " + f_tf_text(tf) + " CONF | ADX " + f_num(adxValue) + " | DI " + f_percent(spread) + slopeTxt : regime == -1 ? "BEAR | " + f_tf_text(tf) + " CONF | ADX " + f_num(adxValue) + " | DI " + f_percent(spread) + slopeTxt : "WAIT | " + f_tf_text(tf) + " CONF | ADX " + f_num(adxValue) + " | DI " + f_percent(spread)
+f_trend_color(int regime) =>
+    f_color(regime)
+f_adx_strength(float adxValue, float adxMove, float plusValue, float minusValue, float spread) =>
+    if na(adxValue) or na(plusValue) or na(minusValue)
+        "N/A"
+    else
+        string side = spread > 0 ? "BULL" : spread < 0 ? "BEAR" : "NEUTRAL"
+        string moveTxt = na(adxMove) ? "" : adxMove > 0 ? " | STRENGTH RISING" : adxMove < 0 ? " | STRENGTH EASING" : " | STRENGTH FLAT"
+        compactLabels ? side + " | ADX " + f_num(adxValue) + (na(adxMove) ? "" : adxMove > 0 ? " ↑" : adxMove < 0 ? " ↓" : " →") + " | ΔDI " + f_percent(spread) : side + " PRESSURE | ADX " + f_num(adxValue) + " | ΔDI " + f_percent(spread) + moveTxt
+f_trigger_text(int d, bool ready, string why, float momNorm, float deltaPct, string basis) =>
+    not ready ? (why == "OFF SESSION" ? "OFF SESSION" : "WAIT | " + why) : d == 1 ? "RAW BULL | " + basis + " | MOM/ATR " + f_ratio(momNorm) + " | Δ% " + f_percent(deltaPct) : d == -1 ? "RAW BEAR | " + basis + " | MOM/ATR " + f_ratio(momNorm) + " | Δ% " + f_percent(deltaPct) : "WAIT | " + why
+f_trigger_color(int d, bool ready) =>
+    not ready ? color.gray : f_color(d)
+f_confirmation_text(int triggerDirection, bool triggerReady, float currentBlock, float priorBlock, bool priorReady) =>
+    not triggerReady or triggerDirection == 0 ? "WAIT | NO RAW TRIGGER" : not priorReady or na(priorBlock) ? "EARLY | PRIOR BLOCK WARMUP" : triggerDirection * priorBlock < 0 ? "CONFLICT | PRIOR BLOCK OPPOSITE" : priorBlock == 0 ? "EARLY | PRIOR BLOCK FLAT" : math.abs(currentBlock) >= math.abs(priorBlock) ? "CONFIRMED | MOMENTUM BUILDING" : "CONFIRMED | MOMENTUM FADING"
+f_confirmation_ok(int triggerDirection, bool triggerReady, float priorBlock, bool priorReady) =>
+    triggerReady and triggerDirection != 0 and priorReady and not na(priorBlock) and triggerDirection * priorBlock > 0
+f_confirmation_color(int triggerDirection, bool triggerReady, float priorBlock, bool priorReady) =>
+    not triggerReady or triggerDirection == 0 or not priorReady or na(priorBlock) ? color.gray : triggerDirection * priorBlock > 0 ? (triggerDirection == 1 ? color.teal : color.red) : color.orange
+f_action_text(int action, string reason) =>
+    action == 1 ? "LONG | " + reason : action == -1 ? "SHORT | " + reason : "WAIT | " + reason
+f_action_color(int action) =>
+    f_color(action)
+
+f_time(int t) =>
+    na(t) ? "N/A" : str.format_time(t, "yyyy-MM-dd HH:mm", zone)
+f_equal_float(float a, float b) =>
+    (na(a) and na(b)) or (not na(a) and not na(b) and math.abs(a - b) <= math.max(1e-8, math.max(math.abs(a), math.abs(b)) * 1e-10))
+f_closed_window_ok(int beginAt, int endAt, int feedOpen, int feedEnd, float seconds) =>
+    // A native session tail can be closed after fewer than the nominal minutes.
+    // Coverage validates the ACTUAL interval; entry eligibility is separate below.
+    int actualMs = endAt - beginAt
+    bool durationOK = not na(actualMs) and actualMs >= 60000 and actualMs % 60000 == 0 and (timeframe.isdaily or actualMs <= int(seconds * 1000.0))
+    not na(beginAt) and not na(endAt) and durationOK and not na(feedOpen) and not na(feedEnd) and feedEnd - feedOpen == 60000 and feedOpen >= beginAt and feedEnd == endAt
+f_symbol_name(string symbol) =>
+    array<string> parts = str.split(symbol, ":")
+    array.get(parts, array.size(parts) - 1)
+f_row(table t, int row, string title, string value, color c, string tip) =>
+    table.cell(t, 0, row, title, text_color=chart.fg_color, text_size=panelTextSize, text_halign=text.align_left, tooltip=tip)
+    table.cell(t, 1, row, (compactLabels ? "" : "  ") + value + (compactLabels ? "" : "  "), text_color=c, text_size=panelTextSize, text_halign=text.align_left, tooltip=tip)
+f_true_range(float hi, float lo, float pc) =>
+    na(hi) or na(lo) or na(pc) or hi < lo ? na : math.max(hi - lo, math.max(math.abs(hi - pc), math.abs(lo - pc)))
+// Source-window checks never compare exchange bar time with execution time.
+f_minute_in_parent(int sourceOpen, int sourceEnd, int parentOpen, int parentEnd) =>
+    not na(sourceOpen) and not na(sourceEnd) and not na(parentOpen) and not na(parentEnd) and sourceEnd - sourceOpen == 60000 and sourceOpen >= parentOpen and sourceEnd <= parentEnd
+
+f_same_source_minute(int sourceOpen, int sourceEnd, int stamp, int clockOpen, int clockEnd, int parentOpen, int parentEnd) =>
+    f_minute_in_parent(sourceOpen, sourceEnd, parentOpen, parentEnd) and sourceOpen == clockOpen and sourceEnd == clockEnd and stamp == sourceEnd
+
+// Age is only a notification/status policy. End is a minute-window bound,
+// so this is not an exact feed-latency measurement or entitlement detector.
+f_wall_fresh(int sourceOpen, int sourceEnd, int nowAt) =>
+    not na(sourceOpen) and not na(sourceEnd) and sourceEnd - sourceOpen == 60000 and sourceOpen <= nowAt and sourceEnd >= nowAt - 90000
+
+type VolumeSession
+    array<float> cumulative
+    array<int> observed
+
+const int MAX_SELECTED_SESSION_MINUTES = 1500
+
+// Prefix entries in empty clock slots are bookkeeping, NOT synthetic candles.
+// Session identity follows the active named chart session. `time_tradingday` is
+// stable across overnight portions, while `session.isfirstbar` verifies that the
+// requested 1m history actually observed the selected session's first bar.
+// A separate observed count validates every RVOL comparison window.
+f_volume_packet(simple bool computeRVOL, simple string basisTF) =>
+    int sessionId = time_tradingday
+    bool inside = not na(sessionId)
+    var array<VolumeSession> history = array.new<VolumeSession>(0)
+    var array<float> today = array.new<float>(0)
+    var array<int> observed = array.new<int>(0)
+    var array<float> samples = array.new<float>(0)
+    var array<float> fullSamples = array.new<float>(0)
+    var int active = na
+    var int sessionOpen = na
+    var bool sessionStartObserved = false
+    var bool sessionGood = false
+    var int lastSlot = -1
+    var int previousClose = na
+    var int observedCount = 0
+    var int selectedSessionEnd = na
+    var float cumV = 0.0
+    var float cumPV = 0.0
+    var float vw = na
+    var float rv = na
+    var int n = 0
+    var int asof = na
+    var string failure = "NO SOURCE HISTORY"
+    var string vs = "NO SOURCE HISTORY"
+    var string rs = "NO SOURCE HISTORY"
+    float fullRV = na
+    int fullN = 0
+    string fullRS = computeRVOL ? "INTERVAL NOT ALIGNED" : "OFF"
+    if inside
+        bool newSession = na(active) or active != sessionId
+        if newSession
+            // Archive only sessions whose true selected-session start was seen.
+            // Individual RVOL windows still pass their own observed-count checks.
+            if computeRVOL and not na(active) and sessionStartObserved and observedCount > 0 and cumV > 0
+                array.push(history, VolumeSession.new(array.copy(today), array.copy(observed)))
+                if array.size(history) > rvolDays
+                    array.shift(history)
+            active := sessionId
+            sessionOpen := time
+            sessionStartObserved := session.isfirstbar
+            sessionGood := sessionStartObserved
+            lastSlot := -1
+            previousClose := na
+            observedCount := 0
+            selectedSessionEnd := na
+            cumV := 0.0
+            cumPV := 0.0
+            failure := sessionGood ? "OK" : "SESSION START NOT OBSERVED"
+            if computeRVOL
+                today := array.new<float>(0)
+                observed := array.new<int>(0)
+        int slot = not na(sessionOpen) ? int((time - sessionOpen) / 60000) : -1
+        bool minuteShape = not na(time_close) and time_close - time == 60000
+        bool pricesOK = not na(open) and not na(high) and not na(low) and not na(close) and high >= math.max(open, close) and low <= math.min(open, close) and high >= low
+        bool volumeOK = not na(volume) and volume >= 0
+        bool slotOK = slot >= 0 and slot < MAX_SELECTED_SESSION_MINUTES and slot > lastSlot
+        bool continuityOK = newSession or (not na(previousClose) and time == previousClose)
+        bool minuteOK = minuteShape and pricesOK and volumeOK and slotOK
+        if not continuityOK
+            sessionGood := false
+            failure := "SOURCE COVERAGE NOT VERIFIED"
+        if not minuteOK
+            sessionGood := false
+            failure := not slotOK ? "SOURCE SLOT CHECK" : not minuteShape ? "SOURCE BAR CHECK" : not volumeOK ? "NO USABLE VOLUME" : "INVALID OHLC"
+        // Grow to the actual selected-session clock offset. Missing slots retain
+        // cumulative bookkeeping only; observed counts do not invent candles.
+        if computeRVOL and slotOK
+            while array.size(today) <= slot
+                array.push(today, cumV)
+                array.push(observed, observedCount)
+        if minuteOK
+            cumV += volume
+            cumPV += hlc3 * volume
+            observedCount += 1
+        if computeRVOL and slotOK
+            array.set(today, slot, cumV)
+            array.set(observed, slot, observedCount)
+        previousClose := time_close
+        lastSlot := slot
+        asof := time_close
+        if session.islastbar and not barstate.isrealtime
+            selectedSessionEnd := time_close
+        bool sessionCompleteSoFar = sessionGood and minuteOK and observedCount == slot + 1
+        vw := sessionCompleteSoFar and cumV > 0 ? cumPV / cumV : na
+        vs := not sessionCompleteSoFar ? failure : cumV <= 0 ? "ZERO SESSION VOLUME" : "OK"
+        rv := na
+        n := 0
+        rs := computeRVOL ? "INTERVAL NOT ALIGNED" : "OFF"
+        if computeRVOL and slotOK
+            int parent = time(basisTF)
+            int intervalStart = rvolMode == "Chart bar" ? math.max(parent, sessionOpen) : sessionOpen
+            int priorSlot = int((intervalStart - sessionOpen) / 60000) - 1
+            bool aligned = not na(parent) and not na(sessionOpen) and intervalStart >= sessionOpen and intervalStart <= time and (intervalStart - sessionOpen) % 60000 == 0
+            if aligned
+                // Two estimates share one history pass. A full-minute snapshot is
+                // selected ONLY by the confirmed native host candle, outside this
+                // request. Wall time never certifies the source minute's close.
+                bool elapsedKnown = not barstate.isrealtime or (timenow >= time and timenow < time_close)
+                bool closedSample = not elapsedKnown
+                int sampleSlot = slot - (closedSample ? 1 : 0)
+                bool previousBarSample = closedSample and rvolMode == "Chart bar" and timeframe.in_seconds(basisTF) == 60 and sampleSlot >= 0
+                int samplePriorSlot = previousBarSample ? sampleSlot - 1 : priorSlot
+                bool haveSample = sampleSlot >= 0 and sampleSlot > samplePriorSlot and sampleSlot < array.size(today)
+                int requiredCount = sampleSlot - samplePriorSlot
+                float currentInterval = na
+                bool currentComplete = false
+                float progress = closedSample or not barstate.isrealtime ? 1.0 : math.max(0.0, math.min(1.0, float(timenow - time) / 60000.0))
+                if haveSample
+                    float beforeNow = samplePriorSlot >= 0 ? array.get(today, samplePriorSlot) : 0.0
+                    int beforeCount = samplePriorSlot >= 0 ? array.get(observed, samplePriorSlot) : 0
+                    int sampleCount = array.get(observed, sampleSlot)
+                    currentComplete := (closedSample or minuteOK) and sampleCount - beforeCount == requiredCount
+                    currentInterval := currentComplete ? array.get(today, sampleSlot) - beforeNow : na
+                int fullRequired = slot - priorSlot
+                float beforeFullNow = priorSlot >= 0 ? array.get(today, priorSlot) : 0.0
+                int beforeFullCount = priorSlot >= 0 ? array.get(observed, priorSlot) : 0
+                bool fullCurrentOK = minuteOK and array.get(observed, slot) - beforeFullCount == fullRequired
+                float fullCurrent = fullCurrentOK ? array.get(today, slot) - beforeFullNow : na
+                array.clear(samples)
+                array.clear(fullSamples)
+                if array.size(history) > 0
+                    for d = 0 to array.size(history) - 1
+                        VolumeSession prior = array.get(history, d)
+                        int priorSize = array.size(prior.cumulative)
+                        if slot < priorSize and (priorSlot < 0 or priorSlot < priorSize)
+                            int observedBefore = priorSlot >= 0 ? array.get(prior.observed, priorSlot) : 0
+                            bool fullPriorOK = array.get(prior.observed, slot) - observedBefore == fullRequired
+                            float fullBefore = priorSlot >= 0 ? array.get(prior.cumulative, priorSlot) : 0.0
+                            float fullMatched = array.get(prior.cumulative, slot) - fullBefore
+                            if fullPriorOK and not na(fullMatched) and fullMatched >= 0
+                                array.push(fullSamples, fullMatched)
+                        bool priorHasWindow = haveSample and sampleSlot < priorSize and (samplePriorSlot < 0 or samplePriorSlot < priorSize)
+                        if priorHasWindow
+                            float full = array.get(prior.cumulative, sampleSlot)
+                            float beforeMinute = sampleSlot > 0 ? array.get(prior.cumulative, sampleSlot - 1) : 0.0
+                            float beforeInterval = samplePriorSlot >= 0 ? array.get(prior.cumulative, samplePriorSlot) : 0.0
+                            int countAtEnd = array.get(prior.observed, sampleSlot)
+                            int countBefore = samplePriorSlot >= 0 ? array.get(prior.observed, samplePriorSlot) : 0
+                            bool completeWindow = countAtEnd - countBefore == requiredCount
+                            if completeWindow and not na(full) and not na(beforeMinute) and not na(beforeInterval) and full >= beforeMinute and beforeMinute >= beforeInterval
+                                float matched = beforeMinute + (full - beforeMinute) * progress - beforeInterval
+                                if matched >= 0
+                                    array.push(samples, matched)
+                n := array.size(samples)
+                float baseline = n >= minSamples ? array.median(samples) : na
+                rv := not na(currentInterval) and currentInterval >= 0 and not na(baseline) and baseline > 0 ? currentInterval / baseline : na
+                rs := not haveSample ? "WAIT CLOSED SOURCE MINUTE" : not currentComplete ? "INTERVAL COVERAGE NOT VERIFIED" : n < minSamples ? "SAMPLES " + str.tostring(n) + "/" + str.tostring(minSamples) : na(baseline) or baseline <= 0 ? "ZERO BASELINE" : previousBarSample ? "OK | PREV BAR" : closedSample ? "OK | CLOSED SAMPLE" : "OK"
+                fullN := array.size(fullSamples)
+                float fullBaseline = fullN >= minSamples ? array.median(fullSamples) : na
+                fullRV := not na(fullCurrent) and fullCurrent >= 0 and not na(fullBaseline) and fullBaseline > 0 ? fullCurrent / fullBaseline : na
+                fullRS := not fullCurrentOK ? "INTERVAL COVERAGE NOT VERIFIED" : fullN < minSamples ? "SAMPLES " + str.tostring(fullN) + "/" + str.tostring(minSamples) : na(fullBaseline) or fullBaseline <= 0 ? "ZERO BASELINE" : "OK | FULL CLOSED WINDOW"
+    if computeRVOL and not sessionStartObserved
+        rv := na
+        fullRV := na
+        n := 0
+        fullN := 0
+        rs := "SESSION START NOT OBSERVED"
+        fullRS := "SESSION START NOT OBSERVED"
+    [vw, rv, n, active, asof, vs, rs, time, time_close, selectedSessionEnd, fullRV, fullN, fullRS]
+
+f_flow_packet(simple string basisTF) =>
+    bool canFlow = true // Universal: validate native data, never branch on symbol type.
+    int sessionId = time_tradingday
+    bool inside = not na(sessionId)
+    int currentParent = time(basisTF)
+    int currentParentEnd = time_close(basisTF)
+    var int active = na
+    var int previousCloseTime = na
+    var float previousPriceClose = na
+    var int polarity = 0
+    var bool sessionGood = false
+    var string sessionFailure = "NO SOURCE HISTORY"
+    var float cumV = 0.0
+    var float cv = 0.0
+    var float unknown = 0.0
+    var int parentOpen = na
+    var int parentEnd = na
+    var int parentMinuteCount = 0
+    var bool parentGood = false
+    var string parentFailure = "NO SOURCE HISTORY"
+    var float dv = 0.0
+    var float parentV = 0.0
+    var float parentUnknown = 0.0
+    var int asof = na
+    if inside
+        bool newSession = na(active) or active != sessionId
+        if newSession
+            active := sessionId
+            sessionGood := session.isfirstbar
+            sessionFailure := sessionGood ? "OK" : "SESSION START NOT OBSERVED"
+            previousCloseTime := na
+            previousPriceClose := na
+            polarity := 0
+            cumV := 0.0
+            cv := 0.0
+            unknown := 0.0
+            parentOpen := currentParent
+            parentEnd := currentParentEnd
+            parentMinuteCount := 0
+            parentGood := not na(currentParent) and time == currentParent
+            parentFailure := parentGood ? "OK" : "INTERVAL START NOT OBSERVED"
+            dv := 0.0
+            parentV := 0.0
+            parentUnknown := 0.0
+        else if currentParent != parentOpen
+            parentOpen := currentParent
+            parentEnd := currentParentEnd
+            parentMinuteCount := 0
+            parentGood := not na(currentParent) and time == currentParent
+            parentFailure := parentGood ? "OK" : "INTERVAL START NOT OBSERVED"
+            dv := 0.0
+            parentV := 0.0
+            parentUnknown := 0.0
+        if not newSession and (na(previousCloseTime) or time != previousCloseTime)
+            sessionGood := false
+            sessionFailure := "SOURCE COVERAGE NOT VERIFIED"
+            if time != currentParent
+                parentGood := false
+                parentFailure := "INTERVAL COVERAGE NOT VERIFIED"
+        bool parentAligned = not na(currentParent) and not na(currentParentEnd) and currentParent <= time and currentParentEnd >= time_close
+        bool minuteShape = not na(time_close) and time_close - time == 60000
+        bool pricesOK = not na(open) and not na(high) and not na(low) and not na(close) and high >= math.max(open, close) and low <= math.min(open, close) and high >= low
+        bool volumeOK = not na(volume) and volume >= 0
+        bool minuteOK = parentAligned and minuteShape and pricesOK and volumeOK
+        if not minuteOK
+            sessionGood := false
+            parentGood := false
+            sessionFailure := not parentAligned ? "PARENT ALIGNMENT" : not minuteShape ? "SOURCE BAR CHECK" : not volumeOK ? "NO USABLE VOLUME" : "INVALID OHLC"
+            parentFailure := sessionFailure
+        previousCloseTime := time_close
+        asof := time_close
+        if minuteOK
+            int resolvedPolarity = close > open ? 1 : close < open ? -1 : not na(previousPriceClose) and close > previousPriceClose ? 1 : not na(previousPriceClose) and close < previousPriceClose ? -1 : 0
+            if resolvedPolarity != 0
+                polarity := resolvedPolarity
+            float signedV = 0.0
+            if flowEstimator == "Range-weighted"
+                float span = high - low
+                float weight = span > 0 ? math.max(-1.0, math.min(1.0, (close - open) / span)) : float(resolvedPolarity)
+                signedV := volume * weight
+            else
+                signedV := polarity * volume
+                if polarity == 0 and volume > 0
+                    unknown += volume
+                    parentUnknown += volume
+            cumV += volume
+            cv += signedV
+            dv += signedV
+            parentV += volume
+            parentMinuteCount += 1
+            previousPriceClose := close
+    bool legacyUnknown = flowEstimator == "Whole-bar sign (legacy)"
+    int expectedPrefixMinutes = not na(parentOpen) and not na(time_close) ? int((time_close - parentOpen) / 60000) : 0
+    bool parentCoverageOK = parentGood and parentMinuteCount > 0 and parentMinuteCount == expectedPrefixMinutes
+    bool deltaOK = canFlow and parentCoverageOK and (not legacyUnknown or parentUnknown == 0) and parentV > 0
+    bool sessionOK = canFlow and sessionGood and (not legacyUnknown or unknown == 0) and cumV > 0
+    float currentCvd = sessionOK ? cv : na
+    float currentDelta = deltaOK ? dv : na
+    float currentParentVolume = deltaOK ? parentV : na
+    string status = not canFlow ? "INDEX FLOW OFF" : not sessionGood ? sessionFailure : legacyUnknown and unknown > 0 ? "UNCLASSIFIED VOLUME" : cumV <= 0 ? "ZERO SESSION VOLUME" : "OK"
+    string deltaState = not canFlow ? "INDEX FLOW OFF" : not parentGood ? parentFailure : not parentCoverageOK ? "INTERVAL MINUTE COUNT CHECK" : legacyUnknown and parentUnknown > 0 ? "UNCLASSIFIED VOLUME" : parentMinuteCount == 0 ? "NO SOURCE HISTORY" : parentV <= 0 ? "ZERO BAR VOLUME" : "OK"
+    [currentCvd, currentDelta, currentParentVolume, active, asof, parentOpen, status, deltaState, time, time_close]
+
+type TrendSnapshot
+    int regime
+    float plusDI
+    float minusDI
+    float adxValue
+    float previousAdx
+    float spread
+    float emaValue
+    float previousEma
+    float price
+    int beginAt
+    int endAt
+    int sessionId
+
+f_trend_packet_full(simple int expectedMs, simple bool intradayBasis) =>
+    [pdi, mdi, ax] = ta.dmi(diLen, adxSmooth)
+    float e = ta.ema(close, emaLen)
+    float spread = not na(pdi) and not na(mdi) and pdi + mdi > 0 ? (pdi - mdi) / (pdi + mdi) : na
+    bool newSession = intradayBasis and not na(time_tradingday[1]) and time_tradingday != time_tradingday[1]
+    bool fullDuration = not intradayBasis or (not na(time_close) and time_close - time == expectedMs)
+    var bool strengthActive = false
+    if newSession
+        strengthActive := false
+    if fullDuration
+        strengthActive := not na(ax) and (strengthActive ? ax >= adxExit : ax >= adxEnter)
+    int side = na(spread) ? 0 : spread > 0 ? 1 : spread < 0 ? -1 : 0
+    int regime = strengthActive and not na(spread) and math.abs(spread) >= diSpreadMin ? side : 0
+    bool trendPriceAligned = not na(e[1]) and side * (close - e) > 0 and side * (e - e[1]) > 0
+    if trendPriceMode != "DMI / ADX baseline" and not trendPriceAligned
+        regime := 0
+    var TrendSnapshot latestFull = na
+    if fullDuration
+        latestFull := TrendSnapshot.new(regime, pdi, mdi, ax, ax[1], spread, e, e[1], close, time, time_close, time_tradingday)
+    latestFull
+
+f_trend_packet_confirmed(simple int expectedMs, simple bool intradayBasis) =>
+    TrendSnapshot full = f_trend_packet_full(expectedMs, intradayBasis)
+    full[1]
+
+// RANGE maintains only actual complete source candles. A shortened session-end
+// candle cannot collapse a multi-candle range to its own tiny span. Zero-span
+// FULL candles remain valid. N counts actual available source candles; a gap is
+// disclosed, not filled with made-up bars. Invalid OHLC clears the usable window.
+// checkedAt is the evaluated SOURCE candle close, including invalid/partial bars.
+// Window endAt alone cannot certify when the packet's state became knowable.
+type RangeSnapshot
+    float lowValue
+    float highValue
+    int beginAt
+    int endAt
+    int count
+    int firstSession
+    int lastSession
+    int spanMs
+    int checkedAt
+    string state
+
+f_range_packet_full(simple int expectedMs, simple bool intradayBasis) =>
+    var array<float> lows = array.new<float>(0)
+    var array<float> highs = array.new<float>(0)
+    var array<int> starts = array.new<int>(0)
+    var array<int> ends = array.new<int>(0)
+    var array<int> sessionIds = array.new<int>(0)
+    bool sessionChanged = intradayBasis and not na(time_tradingday[1]) and time_tradingday != time_tradingday[1]
+    bool pricesOK = not na(open) and not na(high) and not na(low) and not na(close) and high >= math.max(open, close) and low <= math.min(open, close) and high >= low
+    bool positiveDuration = not na(time) and not na(time_close) and time_close > time
+    bool fullDuration = positiveDuration and (not intradayBasis or time_close - time == expectedMs)
+    bool partialDuration = positiveDuration and intradayBasis and time_close - time < expectedMs
+    bool invalidSource = not pricesOK or (not fullDuration and not partialDuration)
+    if (rangeSessionMode == "Same session only" and sessionChanged) or invalidSource
+        array.clear(lows)
+        array.clear(highs)
+        array.clear(starts)
+        array.clear(ends)
+        array.clear(sessionIds)
+    if fullDuration and pricesOK
+        array.push(lows, low)
+        array.push(highs, high)
+        array.push(starts, time)
+        array.push(ends, time_close)
+        array.push(sessionIds, time_tradingday)
+        if array.size(lows) > rangeLookback
+            array.shift(lows)
+            array.shift(highs)
+            array.shift(starts)
+            array.shift(ends)
+            array.shift(sessionIds)
+    int n = array.size(lows)
+    int firstAt = n > 0 ? array.get(starts, 0) : na
+    int lastAt = n > 0 ? array.get(ends, n - 1) : na
+    float rangeLow = n > 0 ? array.min(lows) : na
+    float rangeHigh = n > 0 ? array.max(highs) : na
+    int firstSid = n > 0 ? array.get(sessionIds, 0) : na
+    int lastSid = n > 0 ? array.get(sessionIds, n - 1) : na
+    string state = invalidSource ? (not pricesOK ? "INVALID SOURCE OHLC" : "INVALID SOURCE TIME") : partialDuration ? "PARTIAL SOURCE BAR SKIPPED" : n < rangeLookback ? "WARMUP" : "OK"
+    // Always return a packet, including an EMPTY invalid packet. Otherwise a
+    // gaps_off request / prior fallback could revive the old pre-error envelope.
+    RangeSnapshot.new(rangeLow, rangeHigh, firstAt, lastAt, n, firstSid, lastSid, n > 0 ? lastAt - firstAt : na, time_close, state)
+
+f_range_packet_confirmed(simple int expectedMs, simple bool intradayBasis) =>
+    RangeSnapshot packet = f_range_packet_full(expectedMs, intradayBasis)
+    packet[1]
+
+// A missing native bar must not silently compress a 3/6-bar entry window.
+// Actual selected-session boundaries are allowed; arbitrary intraday gaps are not.
+f_mom_clock_ok(int bars) =>
+    bool ok = not na(close[bars]) and priceEpoch == priceEpoch[bars]
+    if chartIntraday
+        for i = 0 to bars - 1
+            bool endpoints = not na(close[i]) and not na(close[i + 1]) and not na(time[i]) and not na(time_close[i + 1])
+            bool sameSession = not na(time_tradingday[i]) and time_tradingday[i] == time_tradingday[i + 1]
+            bool joined = sameSession ? time[i] == time_close[i + 1] : verifiedSessionBridge[i]
+            if not endpoints or not joined
+                ok := false
+    ok
+bool momClock3OK = f_mom_clock_ok(momLen)
+bool momClock6OK = f_mom_clock_ok(momContextLen)
+
+f_core(simple string basisTF, simple bool enforceSessionWindows) =>
+    float basisSeconds = timeframe.in_seconds(basisTF)
+    bool supported = chartSupported and not na(basisSeconds) and basisSeconds >= 60 and basisSeconds <= 86400
+    int feedOpen = na
+    int feedEnd = na
+    if supported
+        [clockOpen, clockEnd] = request.security(chartSessionTicker, "1", [time, time_close], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true, calc_bars_count=50000)
+        feedOpen := clockOpen
+        feedEnd := clockEnd
+    bool clockInParent = f_minute_in_parent(feedOpen, feedEnd, time, time_close)
+    int sessionId = time_tradingday
+    bool inside = not na(sessionId)
+    bool priceBarOK = not na(time_close) and time_close > time and not na(open) and not na(high) and not na(low) and not na(close) and high >= math.max(open, close) and low <= math.min(open, close) and high >= low
+
+    bool currentBlockSameSession = useGapMOM or not enforceSessionWindows or (not na(sessionId[momLen]) and sessionId == sessionId[momLen])
+    bool priorBlockSameSession = useGapMOM or not enforceSessionWindows or (not na(sessionId[momContextLen]) and sessionId == sessionId[momLen] and sessionId == sessionId[momContextLen])
+    float momentumPrice = useGapMOM ? gapNeutralPrice : close
+    float m = currentBlockSameSession and momClock3OK ? momentumPrice - momentumPrice[momLen] : na
+    float priorBlock = priorBlockSameSession and momClock6OK ? momentumPrice[momLen] - momentumPrice[momContextLen] : na
+    float nativeEMA = ta.ema(close, emaLen)
+    float e = useGapEMA ? gapNeutralEMA : nativeEMA
+    float atrBase = ta.atr(14)[1]
+    float momNorm = not na(m) and not na(atrBase) and atrBase > 0 ? m / atrBase : na
+    float emaDistanceAtr = not na(e) and not na(atrBase) and atrBase > 0 ? (close - e) / atrBase : na
+    [pdi, mdi, ax] = ta.dmi(diLen, adxSmooth)
+    bool mOK = not na(m) and not na(momNorm)
+    bool priorOK = not na(priorBlock)
+
+    float cv = na
+    float dv = na
+    float parentV = na
+    float deltaPct = na
+    float change = na
+    float changePct = na
+    int historyBars = 0
+    int flowAsOf = na
+    bool aligned = false
+    string flowStatus = not supported ? "USE 1m-1D" : "NO SOURCE HISTORY"
+    string deltaStatus = flowStatus
+    string changeStatus = flowStatus
+    if supported and flowAllowed
+        [fc, fd, fv, fs, fa, fp, fst, fdt, flowOpen, flowEnd] = request.security(flowTicker, "1", f_flow_packet(basisTF), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true, calc_bars_count=50000)
+        bool timeOK = inside and fs == sessionId and fp == time and f_same_source_minute(flowOpen, flowEnd, fa, feedOpen, feedEnd, time, time_close)
+        if timeOK
+            cv := fc
+            dv := fd
+            parentV := fv
+            deltaPct := not na(fv) and fv > 0 ? fd / fv : na
+            flowAsOf := fa
+            aligned := true
+            flowStatus := fst
+            deltaStatus := fdt
+        else
+            flowStatus := na(fs) ? "NO SOURCE HISTORY" : fs != sessionId ? "SESSION NOT ALIGNED" : fp != time ? "SOURCE INTERVAL NOT ALIGNED" : "SOURCE SYNC PENDING"
+            deltaStatus := flowStatus
+
+    var int cleanFlowBars = 0
+    bool sameFlowSession = (not enforceSessionWindows or (not na(sessionId[1]) and sessionId == sessionId[1])) and (not chartIntraday or time == time_close[1] or verifiedSessionBridge)
+    bool componentClosedOK = f_closed_window_ok(time, time_close, feedOpen, feedEnd, basisSeconds)
+    bool cleanFlowBar = aligned and not na(dv) and not na(parentV) and parentV > 0 and (not barstate.isconfirmed or componentClosedOK)
+    cleanFlowBars := cleanFlowBar ? (sameFlowSession ? nz(cleanFlowBars[1]) + 1 : 1) : 0
+    historyBars := math.min(cleanFlowBars, deltaContextBars)
+    bool changeWindowOK = cleanFlowBars >= deltaContextBars
+    float rollingChange = 0.0
+    float rollingVolume = 0.0
+    if changeWindowOK
+        for offset = 0 to deltaContextBars - 1
+            float deltaPart = dv[offset]
+            float volumePart = parentV[offset]
+            bool sameWindowSession = not enforceSessionWindows or (not na(sessionId[offset]) and sessionId[offset] == sessionId)
+            bool priorComponentComplete = offset == 0 ? (not barstate.isconfirmed or componentClosedOK) : componentClosedOK[offset]
+            if na(deltaPart) or na(volumePart) or volumePart <= 0 or not sameWindowSession or not priorComponentComplete
+                changeWindowOK := false
+            else
+                rollingChange += deltaPart
+                rollingVolume += volumePart
+    change := changeWindowOK ? rollingChange : na
+    changePct := changeWindowOK and rollingVolume > 0 ? rollingChange / rollingVolume : na
+    changeStatus := not aligned ? flowStatus : not cleanFlowBar ? deltaStatus : cleanFlowBars < deltaContextBars ? "Δ" + str.tostring(deltaContextBars) + " WARMUP " + str.tostring(cleanFlowBars) + "/" + str.tostring(deltaContextBars) : not changeWindowOK ? "DELTA WINDOW CHECK" : "OK"
+
+    bool flowOK = aligned and not na(deltaPct) and (not requireRollingFlow or not na(changePct))
+    bool ready = supported and inside and priceBarOK and mOK and not na(e) and not na(emaDistanceAtr) and (not requireFlow or flowOK)
+    bool bull = ready and momNorm > 0 and momNorm >= momAtrMin and (not requireFlow or (deltaPct > 0 and deltaPct >= deltaPctMin and (not requireRollingFlow or changePct > 0)))
+    bool bear = ready and momNorm < 0 and momNorm <= -momAtrMin and (not requireFlow or (deltaPct < 0 and deltaPct <= -deltaPctMin and (not requireRollingFlow or changePct < 0)))
+    int direction = bull ? 1 : bear ? -1 : 0
+    string why = bull or bear ? "OWN-TF MOM / SELECTED FLOW POLICY ALIGNED" : not supported ? "USE 1m-1D" : not priceBarOK ? "PRICE BAR CHECK" : not momClock3OK ? "MOM HISTORY CLOCK / PRICE CHECK" : not currentBlockSameSession ? "OPENING MOM WARMUP" : na(atrBase) or atrBase <= 0 ? "ATR WARMUP" : not mOK ? "MOM WARMUP" : na(e) or na(emaDistanceAtr) ? "EMA HISTORY / RESTART" : requireFlow and not flowOK ? "REQUIRED DELTA DATA WARMUP / MISSING" : momNorm == 0 ? "FLAT MOM" : math.abs(momNorm) < momAtrMin ? "MOM/ATR BELOW THRESHOLD" : requireFlow and requireRollingFlow and momNorm * changePct <= 0 ? "MOM / DELTAN CONFLICT" : requireFlow ? "MOM / DELTA1 SIGN OR THRESHOLD" : "THRESHOLDS NOT ALIGNED"
+    [direction, ready, why, close, close[momLen], close[momContextLen], m, priorBlock, momNorm, e, atrBase, emaDistanceAtr, pdi, mdi, ax, m[1], priorBlock[1], ax[1], time, time_close, cv, dv, parentV, deltaPct, change, changePct, historyBars, flowAsOf, flowStatus, aligned, mOK, priorOK, sessionId, deltaStatus, changeStatus, feedOpen, feedEnd]
+
+
+// ── Independent OVERALL TREND, source-time confirmed ────────────────────────
+float trendSeconds = timeframe.in_seconds(trendTF)
+int trendExpectedMs = int(trendSeconds * 1000.0)
+bool trendIntraday = trendSeconds < 86400
+bool trendIsLowerThanChart = hostSeconds > trendSeconds
+TrendSnapshot trendPrior = request.security(chartSessionTicker, trendTF, f_trend_packet_confirmed(trendExpectedMs, trendIntraday), gaps=barmerge.gaps_off, lookahead=trendIsLowerThanChart ? barmerge.lookahead_off : barmerge.lookahead_on, ignore_invalid_symbol=true, calc_bars_count=5000)
+TrendSnapshot trendRecent = request.security(chartSessionTicker, trendTF, f_trend_packet_full(trendExpectedMs, trendIntraday), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true, calc_bars_count=5000)
+int trendCutoff = barstate.isconfirmed ? time_close : time
+if trendIsLowerThanChart and not barstate.isconfirmed
+    trendCutoff := request.security(chartSessionTicker, "1", time, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true, calc_bars_count=50000)
+bool priorClosed = not na(trendPrior) and not na(trendCutoff) and trendPrior.endAt <= trendCutoff
+bool recentClosed = not na(trendRecent) and not na(trendCutoff) and trendRecent.endAt <= trendCutoff
+TrendSnapshot chosenTrend = recentClosed and (not priorClosed or trendRecent.endAt >= trendPrior.endAt) ? trendRecent : priorClosed ? trendPrior : na
+
+f_trend_status(TrendSnapshot t, int referenceSession, int referenceEnd) =>
+    string result = "WARMUP"
+    if not na(t)
+        result := na(t.adxValue) or na(t.spread) or na(t.emaValue) ? "WARMUP" : na(referenceEnd) or t.endAt > referenceEnd ? "SOURCE TIME CHECK" : trendIntraday and t.endAt - t.beginAt != trendExpectedMs ? "PARTIAL BAR BLOCKED" : trendIntraday and t.sessionId != referenceSession ? "CURRENT SESSION WARMUP" : trendIntraday and referenceEnd - t.endAt >= trendExpectedMs ? "STALE TREND" : "OK"
+    result
+
+// ── Independent RANGE; no source end beyond this chart event's cutoff ──────
+RangeSnapshot nativeRange = f_range_packet_full(rangeExpectedMs, rangeIntraday)
+RangeSnapshot rangePrior = na
+RangeSnapshot rangeRecent = na
+if rangeTF == signalTF
+    rangePrior := nativeRange[1]
+    rangeRecent := nativeRange
+else
+    rangePrior := request.security(chartSessionTicker, rangeTF, f_range_packet_confirmed(rangeExpectedMs, rangeIntraday), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, ignore_invalid_symbol=true, calc_bars_count=5000)
+    rangeRecent := request.security(chartSessionTicker, rangeTF, f_range_packet_full(rangeExpectedMs, rangeIntraday), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true, calc_bars_count=5000)
+int rangeCutoff = barstate.isconfirmed ? time_close : time
+bool rangePriorClosed = not na(rangePrior) and not na(rangeCutoff) and not na(rangePrior.checkedAt) and rangePrior.checkedAt <= rangeCutoff
+bool rangeRecentClosed = not na(rangeRecent) and not na(rangeCutoff) and not na(rangeRecent.checkedAt) and rangeRecent.checkedAt <= rangeCutoff
+// Select by the packet's evaluation time, NOT its last usable candle's end.
+// A newer empty/invalid packet must win over an older valid price envelope.
+RangeSnapshot chosenRange = rangeRecentClosed and (not rangePriorClosed or rangeRecent.checkedAt >= rangePrior.checkedAt) ? rangeRecent : rangePriorClosed ? rangePrior : na
+
+// ── ONE native chart calculation ────────────────────────────────────────────
+[rawDirection, rawReady, rawWhy, chartClose, momRef, mom2Ref, mom, priorMom, momNorm, ema, atrBase, emaDistance, plusDI, minusDI, adx, momPrevious, priorMomPrevious, adxPrevious, barStart, barEnd, sessionCVD, delta1, parentVolume, deltaPct, deltaN, changePct, flowHistory, flowAsOf, flowStatus, flowAligned, momReady, priorReady, chartSessionId, deltaStatus, changeStatus, feedStart, feedEnd] = f_core(timeframe.main_period, strictSessionMOM)
+float cumulativeMom = not na(mom) and not na(priorMom) ? mom + priorMom : na
+float cumulativeMomPrevious = not na(momPrevious) and not na(priorMomPrevious) ? momPrevious + priorMomPrevious : na
+bool closedWindowComplete = chartSupported and f_closed_window_ok(barStart, barEnd, feedStart, feedEnd, signalSeconds)
+bool fullSignalDuration = timeframe.isdaily or (not na(barStart) and not na(barEnd) and barEnd - barStart == int(signalSeconds * 1000.0))
+// A shortened bar is a real closed observation but NOT a full-TF entry event.
+bool frameReady = rawReady and fullSignalDuration and (not requireFlow or not barstate.isconfirmed or closedWindowComplete)
+int frameDirection = frameReady ? rawDirection : 0
+string frameWhy = not chartSupported ? "USE 1m-1D" : not fullSignalDuration ? "SHORT NATIVE BAR " + f_num(float(barEnd - barStart) / 60000.0) + "/" + f_num(signalSeconds / 60.0) + "m; NO NEW ENTRY" : requireFlow and barstate.isconfirmed and not closedWindowComplete ? "REQUIRED DELTA SOURCE WINDOW INCOMPLETE" : rawWhy
+// Do not label partial native-minute flow as a complete closed-bar reading.
+// Price-only indicators remain visible; coverage-dependent fields are withheld.
+if barstate.isconfirmed and not closedWindowComplete
+    sessionCVD := na
+    delta1 := na
+    deltaPct := na
+    deltaN := na
+    changePct := na
+    flowStatus := "SOURCE WINDOW INCOMPLETE"
+    deltaStatus := "SOURCE WINDOW INCOMPLETE"
+    changeStatus := "SOURCE WINDOW INCOMPLETE"
+
+float sessionVWAP = na
+float rvol = na
+int rvolN = 0
+string rvolStatus = not chartSupported ? "USE 1m-1D" : not volumeAllowed ? "INDEX VOLUME OFF" : "SOURCE PENDING"
+string vwapStatus = rvolStatus
+if chartSupported and volumeAllowed
+    [v, rv, n, sid, stamp, vs, rs, volumeOpen, volumeEnd, sessionEnd, fullRV, fullN, fullRS] = request.security(chartSessionTicker, "1", f_volume_packet(true, timeframe.main_period), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true, calc_bars_count=50000)
+    bool aligned = sid == chartSessionId and f_same_source_minute(volumeOpen, volumeEnd, stamp, feedStart, feedEnd, barStart, barEnd)
+    if aligned and (not barstate.isconfirmed or closedWindowComplete)
+        sessionVWAP := v
+        rvol := barstate.isconfirmed ? fullRV : rv
+        rvolN := barstate.isconfirmed ? fullN : n
+        rvolStatus := barstate.isconfirmed ? fullRS : rs
+        vwapStatus := vs
+    else
+        rvolStatus := barstate.isconfirmed and not closedWindowComplete ? "SOURCE WINDOW INCOMPLETE" : "SOURCE SYNC PENDING"
+        vwapStatus := rvolStatus
+
+var bool ownAdxActive = false
+if nativeSessionChanged
+    ownAdxActive := false
+bool ownAdxQualifiedNow = not na(adx) and adx >= (ownAdxActive ? ownAdxExit : ownAdxEnter)
+if barstate.isconfirmed
+    ownAdxActive := ownAdxQualifiedNow
+
+// Every field below belongs to exactly one CHART candle. Objects are replaced,
+// never mutated after capture, so a live preview cannot alter a frozen decision.
+type ChartSnapshot
+    bool ownAdxQualified
+    int direction
+    bool ready
+    string why
+    float price
+    float mom
+    float priorMom
+    float cumulativeMom
+    float previousMom
+    float previousCumulativeMom
+    float momNorm
+    float emaValue
+    float atrValue
+    float emaDistance
+    float plusDI
+    float minusDI
+    float adxValue
+    float previousAdx
+    float cvd
+    float delta1
+    float deltaPct
+    float deltaN
+    float changePct
+    float lowValue
+    float highValue
+    float rvolValue
+    int rvolSamples
+    float vwapValue
+    string rvolState
+    string cvdState
+    string deltaState
+    string changeState
+    int sourceEnd
+    float sourceVolume
+    float chartVolume
+    float deltaWindowMinutes
+    int beginAt
+    int endAt
+    int sessionId
+
+float deltaWindowMinutes = na
+if not na(deltaN)
+    float minutesTotal = 0.0
+    for offset = 0 to deltaContextBars - 1
+        minutesTotal += float(time_close[offset] - time[offset]) / 60000.0
+    deltaWindowMinutes := minutesTotal
+
+ChartSnapshot developing = ChartSnapshot.new(ownAdxQualifiedNow, frameDirection, frameReady, frameWhy, chartClose, mom, priorMom, cumulativeMom, momPrevious, cumulativeMomPrevious, momNorm, ema, atrBase, emaDistance, plusDI, minusDI, adx, adxPrevious, sessionCVD, delta1, deltaPct, deltaN, changePct, low, high, rvol, rvolN, sessionVWAP, rvolStatus, flowStatus, deltaStatus, changeStatus, feedEnd, parentVolume, volume, deltaWindowMinutes, barStart, barEnd, chartSessionId)
+
+
+// ── Native MOM price context; NEVER used as an entry-policy bypass ──────────
+// Keep gated ENTRY fields in ChartSnapshot separate from native MOM. This separate
+// snapshot exists only for table/pane/Data Window analytics. Call once per bar
+// so history references and changes use native chart bars, not execution ticks.
+type MomentumContext
+    float price
+    float mom
+    float cumulativeMom
+    float priorMom
+    float previousMom
+    float previousCumulativeMom
+    float atrValue
+    float momNorm
+    float refMPrice
+    float ref2MPrice
+    int refMEnd
+    int ref2MEnd
+    bool crossM
+    bool cross2M
+    int availableCloses
+    int beginAt
+    int endAt
+    int sessionId
+
+f_mom_context_packet() =>
+    float nativeM = close - close[momLen]
+    // Direct endpoints: MOM6 must not depend on close[3] being available.
+    float native2M = close - close[momContextLen]
+    float nativePrior = close[momLen] - close[momContextLen]
+    float nativeAtr = ta.atr(14)[1]
+    float nativeNorm = not na(nativeM) and not na(nativeAtr) and nativeAtr > 0 ? nativeM / nativeAtr : na
+    bool crossM = chartIntraday and not na(time_tradingday) and not na(time_tradingday[momLen]) and time_tradingday != time_tradingday[momLen]
+    bool cross2M = chartIntraday and not na(time_tradingday) and not na(time_tradingday[momContextLen]) and time_tradingday != time_tradingday[momContextLen]
+    MomentumContext.new(close, nativeM, native2M, nativePrior, nativeM[1], native2M[1], nativeAtr, nativeNorm, close[momLen], close[momContextLen], time_close[momLen], time_close[momContextLen], crossM, cross2M, bar_index + 1, time, time_close, time_tradingday)
+
+MomentumContext developingMomContext = f_mom_context_packet()
+var MomentumContext lastClosedMomContext = na
+if barstate.isconfirmed and not na(time_close)
+    // Do not erase a real prior-session snapshot at the new session's first tick.
+    // It is shown as PREV SESSION until the first current-session close arrives.
+    lastClosedMomContext := developingMomContext
+
+f_mom_context_text(float value, float move, int availableCloses, int lookback) =>
+    int requiredCloses = lookback + 1
+    string missing = availableCloses < requiredCloses ? "N/A [HISTORY " + str.tostring(availableCloses) + "/" + str.tostring(requiredCloses) + "]" : momDisplayBasis == "Active entry basis" ? "N/A [ENTRY HISTORY / SESSION]" : "N/A [PRICE DATA]"
+    na(value) ? missing : f_mom(value) + " | " + (na(move) ? "CHANGE N/A" : f_mom_state(value, move))
+// ── End native MOM price context ──────────────────────────────────────────
+
+f_confirm_value(ChartSnapshot s) =>
+    na(s) ? na : confirmationMode == "Cumulative MOM" ? s.cumulativeMom : s.priorMom
+f_confirm_name() =>
+    confirmationMode == "Cumulative MOM" ? "CUMULATIVE MOM" : "PREVIOUS BLOCK"
+f_confirm_reason(ChartSnapshot s) =>
+    float value = f_confirm_value(s)
+    na(s) or not s.ready or s.direction == 0 ? "NO RAW TRIGGER" : confirmationMode == "Off" ? "CONFIRM FILTER OFF" : na(value) ? f_confirm_name() + " WARMUP" : s.direction * value < 0 ? f_confirm_name() + " OPPOSITE" : value == 0 ? f_confirm_name() + " FLAT" : f_confirm_name() + " AGREES"
+f_confirm_ok(ChartSnapshot s) =>
+    float value = f_confirm_value(s)
+    not na(s) and s.ready and s.direction != 0 and (confirmationMode == "Off" or (not na(value) and s.direction * value > 0))
+
+f_own_spread(ChartSnapshot q) =>
+    na(q) or na(q.plusDI) or na(q.minusDI) ? na : q.plusDI + q.minusDI > 0 ? (q.plusDI - q.minusDI) / (q.plusDI + q.minusDI) : 0.0
+f_own_data_ok(ChartSnapshot q) =>
+    ownDmiPolicy == "Reference only" or (not na(f_own_spread(q)) and (ownDmiPolicy != "Require DI + ADX" or not na(q.adxValue)))
+f_own_side_ok(int side, ChartSnapshot q) =>
+    ownDmiPolicy == "Reference only" or (f_own_data_ok(q) and side * f_own_spread(q) > 0 and side * f_own_spread(q) >= ownDiSpreadMin and (ownDmiPolicy != "Require DI + ADX" or q.ownAdxQualified))
+f_confirm_label() =>
+    confirmationMode == "Cumulative MOM" ? "MOM" + str.tostring(momContextLen) : confirmationMode == "Off" ? "CONFIRM OFF" : "PREV BLOCK " + str.tostring(momLen)
+
+// ── Closed-bar diagnostic masks: ALL blockers, not only first failure ───────
+// 1 source/price; 2 MOM data/session; 4 MOM threshold/sign; 8 Delta data;
+// 16 Delta threshold/sign; 32/64 own-DI data/sign (NOT reference Trend);
+// 128 confirm data/session; 256 confirm sign; 512 previous-bar break;
+// 1024 no-chase; 2048 native MOM clock; 4096 own EMA side; 8192 DeltaN.
+f_gate_mask(int side, ChartSnapshot q, bool sourceOK, bool clockOK, bool previousPriceOK, float previousHi, float previousLo) =>
+    int mask = 0
+    bool priceOK = not na(q) and not na(q.price) and not na(q.lowValue) and not na(q.highValue) and q.lowValue <= q.price and q.highValue >= q.price
+    if not sourceOK or not priceOK
+        mask += 1
+    if na(q) or na(q.momNorm)
+        mask += 2
+    else if side * q.momNorm <= 0 or side * q.momNorm < momAtrMin
+        mask += 4
+    if requireFlow
+        if na(q) or na(q.deltaPct)
+            mask += 8
+        else if side * q.deltaPct <= 0 or side * q.deltaPct < deltaPctMin
+            mask += 16
+    // Own-TF policy only. Reference Trend remains completely independent.
+    if ownDmiPolicy != "Reference only"
+        if na(f_own_spread(q))
+            mask += 32
+        else if side * f_own_spread(q) <= 0 or side * f_own_spread(q) < ownDiSpreadMin
+            mask += 64
+    if ownDmiPolicy == "Require DI + ADX"
+        if na(q) or na(q.adxValue)
+            mask += 16384
+        else if not q.ownAdxQualified
+            mask += 32768
+    if requireRollingFlow and (na(q) or na(q.changePct) or side * q.changePct <= 0)
+        mask += 8192
+    float v = f_confirm_value(q)
+    if confirmationMode != "Off"
+        if na(v)
+            mask += 128
+        else if side * v <= 0
+            mask += 256
+    if requirePriceBreak
+        if not previousPriceOK or not priceOK or (side == 1 ? q.price <= previousHi : q.price >= previousLo)
+            mask += 512
+    if na(q) or na(q.emaDistance)
+        mask += 1 * (mask % 2 == 0 ? 1 : 0)
+    else if requireNoChase and side * q.emaDistance > maxEmaDistanceAtr
+        mask += 1024
+    if not clockOK
+        mask += 2048
+    if requireEMASide and not na(q) and not na(q.emaDistance) and side * q.emaDistance <= 0
+        mask += 4096
+    mask
+f_has_bit(int mask, int bitValue) =>
+    not na(mask) and int(math.floor(float(mask) / bitValue)) % 2 == 1
+f_mask_text(int mask) =>
+    string txt = ""
+    txt += f_has_bit(mask, 1) ? "SOURCE/PRICE; " : ""
+    txt += f_has_bit(mask, 2) ? "ENTRY MOM HISTORY/SESSION; " : ""
+    txt += f_has_bit(mask, 4) ? "MOM SIGN/MAGNITUDE; " : ""
+    txt += f_has_bit(mask, 8) ? "DELTA SOURCE; " : ""
+    txt += f_has_bit(mask, 16) ? "DELTA SIGN/MAGNITUDE; " : ""
+    txt += f_has_bit(mask, 32) ? "OWN DI DATA; " : ""
+    txt += f_has_bit(mask, 64) ? "OWN DI DIRECTION; " : ""
+    txt += f_has_bit(mask, 16384) ? "OWN ADX DATA; " : ""
+    txt += f_has_bit(mask, 32768) ? "OWN ADX STRENGTH; " : ""
+    txt += f_has_bit(mask, 128) ? f_confirm_label() + " HISTORY/SESSION; " : ""
+    txt += f_has_bit(mask, 256) ? f_confirm_label() + " SIGN; " : ""
+    txt += f_has_bit(mask, 512) ? "PREVIOUS-BAR BREAK; " : ""
+    txt += f_has_bit(mask, 1024) ? "NO-CHASE; " : ""
+    txt += f_has_bit(mask, 2048) ? "MOM CLOCK GAP; " : ""
+    txt += f_has_bit(mask, 4096) ? "OWN EMA SIDE; " : ""
+    txt += f_has_bit(mask, 8192) ? "DELTAN DATA/SIGN; " : ""
+    na(mask) ? "WAIT FIRST CLOSE" : mask == 0 ? "QUALIFIED BEFORE REVERSAL / EPISODE" : txt
+f_first_blocker(int mask) =>
+    na(mask) ? "WARMUP" : f_has_bit(mask, 1) ? "DATA / EMA" : f_has_bit(mask, 2048) ? "CLOCK / SESSION" : f_has_bit(mask, 2) ? "MOM HISTORY" : f_has_bit(mask, 4) ? "MOM" + str.tostring(momLen) : f_has_bit(mask, 128) ? f_confirm_label() + " HISTORY" : f_has_bit(mask, 256) ? f_confirm_label() : f_has_bit(mask, 32) ? "DI DATA" : f_has_bit(mask, 64) ? "DI SIDE" : f_has_bit(mask, 16384) ? "ADX DATA" : f_has_bit(mask, 32768) ? "ADX" : f_has_bit(mask, 8) ? "DELTA DATA" : f_has_bit(mask, 16) ? "DELTA1" : f_has_bit(mask, 8192) ? "DELTA" + str.tostring(deltaContextBars) : f_has_bit(mask, 512) ? "BREAK" : f_has_bit(mask, 4096) ? "EMA SIDE" : f_has_bit(mask, 1024) ? "NO CHASE" : "PASS"
+var int auditLongMask = na
+var int auditShortMask = na
+var int auditClosedAt = na
+var int closedBreakSide = 0
+
+// ── Official state: only a confirmed native chart close can change it ────────
+var ChartSnapshot closed = na
+var int lastDirectionEventAt = na
+var int lastHistoricalQualification = 0
+var int lastHistoricalQualificationAt = na
+var TrendSnapshot closedTrend = na
+var RangeSnapshot closedRange = na
+var int activeDecisionSession = na
+var int acceptedSide = 0
+var int reversalSide = 0
+var int reversalCount = 0
+var int officialDirection = 0
+var string officialReason = "WAIT FOR CLOSED CHART BAR"
+var string officialConfirmation = "NO CLOSED TRIGGER"
+var int previousEventEnd = na
+bool newSession = chartIntraday and not na(chartSessionId) and (na(activeDecisionSession) or activeDecisionSession != chartSessionId)
+if newSession
+    auditLongMask := na
+    auditShortMask := na
+    auditClosedAt := na
+    closedBreakSide := 0
+    closed := na
+    closedTrend := na
+    if rangeSessionMode == "Same session only"
+        closedRange := na
+    activeDecisionSession := chartSessionId
+    acceptedSide := 0
+    reversalSide := 0
+    reversalCount := 0
+    officialDirection := 0
+    officialReason := "CURRENT SESSION WARMUP"
+    officialConfirmation := "NO CLOSED TRIGGER"
+    previousEventEnd := na
+
+bool newClosedEvent = barstate.isconfirmed and not na(barEnd) and (na(previousEventEnd) or barEnd > previousEventEnd)
+int qualifiedCandidate = 0
+bool qualificationDataKnown = false
+if newClosedEvent
+    closed := developing
+    closedTrend := chosenTrend
+    closedRange := chosenRange
+    int candidate = 0
+
+    string why = "NO CLOSED TRIGGER"
+    bool previousPriceBarOK = not na(high[1]) and not na(low[1]) and (not chartIntraday or (time == time_close[1] and chartSessionId == chartSessionId[1]))
+    closedBreakSide := previousPriceBarOK ? (close > high[1] ? 1 : close < low[1] ? -1 : 0) : 0
+    bool priceTriggerOK = not requirePriceBreak or (previousPriceBarOK and (frameDirection == 1 ? close > high[1] : frameDirection == -1 ? close < low[1] : false))
+    bool clockWindowKnown = momClock3OK and (confirmationMode == "Off" or momClock6OK)
+    bool sourcePriceKnown = chartSupported and fullSignalDuration and (not requireFlow or closedWindowComplete) and not na(open) and not na(high) and not na(low) and not na(close) and high >= math.max(open, close) and low <= math.min(open, close)
+    auditLongMask := f_gate_mask(1, developing, sourcePriceKnown, clockWindowKnown, previousPriceBarOK, high[1], low[1])
+    auditShortMask := f_gate_mask(-1, developing, sourcePriceKnown, clockWindowKnown, previousPriceBarOK, high[1], low[1])
+    auditClosedAt := barEnd
+    bool noChase = not na(emaDistance) and (frameDirection == 1 ? emaDistance <= maxEmaDistanceAtr : frameDirection == -1 ? emaDistance >= -maxEmaDistanceAtr : false)
+    // Data known is independent of whether thresholds qualify. A valid neutral
+    // result can reset an episode; missing REQUIRED flow/price/history cannot do so; reference Trend is irrelevant.
+    bool confirmationDataKnown = confirmationMode == "Off" or not na(f_confirm_value(developing))
+    bool triggerHistoryKnown = not requirePriceBreak or previousPriceBarOK
+    qualificationDataKnown := frameReady and clockWindowKnown and confirmationDataKnown and triggerHistoryKnown and not na(emaDistance) and f_own_data_ok(developing)
+    if not chartSupported
+        why := "USE STANDARD 1m-1D CHART"
+    else if not frameReady or frameDirection == 0
+        why := frameWhy
+    else if not clockWindowKnown
+        why := "MOM HISTORY CLOCK / PRICE CHECK"
+    else if not f_confirm_ok(developing)
+        why := f_confirm_reason(developing)
+    else if not f_own_data_ok(developing)
+        why := "REQUIRED OWN DI / ADX DATA MISSING"
+    else if not f_own_side_ok(frameDirection, developing)
+        why := "REQUIRED OWN DI / ADX NOT ALIGNED"
+    else if not priceTriggerOK
+        why := "WAIT FOR PREVIOUS CHART-BAR BREAK"
+    else if requireEMASide and frameDirection * emaDistance <= 0
+        why := "OWN-TF EMA SIDE OPPOSES SIGNAL"
+    else if requireNoChase and not noChase
+        why := "NO CHASE | EMA DIST " + f_ratio(emaDistance) + " ATR"
+    else
+        candidate := frameDirection
+        why := "OWN-TF SIGNAL | " + f_confirm_reason(developing) + " | TREND REF ONLY | OWN DI/ADX=" + ownDmiPolicy
+    qualifiedCandidate := candidate
+    officialConfirmation := f_confirm_reason(developing)
+    bool adjacent = not na(previousEventEnd) and (chartIntraday ? barStart == previousEventEnd : barStart >= previousEventEnd)
+    if candidate == 0
+        officialDirection := 0
+        officialReason := why
+        reversalSide := 0
+        reversalCount := 0
+    else if acceptedSide == 0 or candidate == acceptedSide
+        acceptedSide := candidate
+        officialDirection := candidate
+        officialReason := why
+        reversalSide := 0
+        reversalCount := 0
+    else
+        reversalCount := reversalSide == candidate and adjacent ? reversalCount + 1 : 1
+        reversalSide := candidate
+        if reversalCount >= reversalConfirmBars
+            acceptedSide := candidate
+            officialDirection := candidate
+            officialReason := why + " | REVERSAL CONFIRMED"
+            reversalSide := 0
+            reversalCount := 0
+        else
+            officialDirection := 0
+            officialReason := "REVERSAL " + str.tostring(reversalCount) + "/" + str.tostring(reversalConfirmBars) + " | WAIT NEXT CLOSED CHART BAR"
+    lastHistoricalQualification := officialDirection
+    lastHistoricalQualificationAt := barEnd
+    previousEventEnd := barEnd
+
+bool closedSameSession = not na(closed) and (not chartIntraday or closed.sessionId == chartSessionId)
+bool decisionGapExpired = chartIntraday and not barstate.isconfirmed and not na(closed) and time > closed.endAt
+int actionDirection = closedSameSession and not decisionGapExpired ? officialDirection : 0
+string actionReason = not closedSameSession ? "CURRENT SESSION WARMUP" : decisionGapExpired ? "OLD EVENT AFTER BAR GAP" : officialReason
+string chartTFText = f_tf_text(timeframe.main_period)
+string trendTFText = f_tf_text(trendTF)
+
+// ── Structural signal episodes: reset is NOT a failed entry filter ───────────
+var int signalEpisodeSerial = 0
+var int signalEpisodeId = 0
+var int signalEpisodeSide = 0
+var int signalEpisodeBegin = na
+var int signalEpisodeResetCount = 0
+var int signalEpisodePreviousEnd = na
+var bool signalEpisodeArmed = true
+var int signalEpisodeAcceptedId = na
+bool signalEpisodeNew = false
+bool structuralDataKnown = fullSignalDuration and momClock3OK and not na(mom) and not na(emaDistance) and nativePriceOK
+if newClosedEvent
+    if newSession
+        signalEpisodeId := 0
+        signalEpisodeSide := 0
+        signalEpisodeBegin := na
+        signalEpisodeResetCount := 0
+        signalEpisodePreviousEnd := na
+        signalEpisodeArmed := true
+        signalEpisodeAcceptedId := na
+    bool episodeAdjacent = not na(signalEpisodePreviousEnd) and (chartIntraday ? barStart == signalEpisodePreviousEnd : barStart >= signalEpisodePreviousEnd)
+    // Both momentum and EMA side must lose the old direction. A breakout miss,
+    // an ADX dip, missing flow or excessive extension alone does not reset.
+    bool structuralReset = signalEpisodeSide != 0 and structuralDataKnown and signalEpisodeSide * mom <= 0 and signalEpisodeSide * emaDistance <= 0
+    if not structuralDataKnown or (requireFlow and not frameReady) or not f_own_data_ok(developing)
+        signalEpisodeResetCount := 0
+    else if structuralReset
+        signalEpisodeResetCount := episodeAdjacent ? signalEpisodeResetCount + 1 : 1
+        if signalEpisodeResetCount >= signalRearmBars
+            signalEpisodeArmed := true
+    else
+        signalEpisodeResetCount := 0
+    if qualificationDataKnown and actionDirection != 0
+        if signalEpisodeSide == 0 or actionDirection != signalEpisodeSide or signalEpisodeArmed
+            signalEpisodeSerial += 1
+            signalEpisodeId := signalEpisodeSerial
+            signalEpisodeSide := actionDirection
+            signalEpisodeBegin := barEnd
+            signalEpisodeArmed := false
+            signalEpisodeNew := true
+            lastDirectionEventAt := barEnd
+        signalEpisodeResetCount := 0
+    signalEpisodePreviousEnd := barEnd
+
+// ── Indicator price guides + independent manual-position exit warnings ──────
+// No strategy.* calls. No fills, realised PnL, automatic position or equity.
+f_guide_floor(float p) =>
+    math.floor(p / syminfo.mintick + 1e-8) * syminfo.mintick
+f_guide_ceil(float p) =>
+    math.ceil(p / syminfo.mintick - 1e-8) * syminfo.mintick
+
+float guideStructureLow = ta.lowest(low, guideStopBars)
+float guideStructureHigh = ta.highest(high, guideStopBars)
+bool guideStructureSameSession = not na(time_tradingday[guideStopBars - 1]) and time_tradingday == time_tradingday[guideStopBars - 1]
+bool guideStructureContinuous = true
+if guideStopBars > 1
+    for offset = 0 to guideStopBars - 2
+        if na(time_close[offset + 1]) or time[offset] != time_close[offset + 1]
+            guideStructureContinuous := false
+bool guideETF = (syminfo.ticker == "QQQ" or syminfo.ticker == "SPY") and syminfo.currency == "USD" and syminfo.pointvalue == 1
+bool guideMicroFuture = syminfo.type == "futures" and (syminfo.root == "MES" or syminfo.root == "MNQ")
+bool guideContinuousFuture = guideMicroFuture and str.contains(syminfo.ticker, "!")
+float guideExpectedPointValue = syminfo.root == "MES" ? 5.0 : syminfo.root == "MNQ" ? 2.0 : na
+bool guideFutureSpecOK = guideMicroFuture and syminfo.currency == "USD" and f_equal_float(syminfo.mintick, 0.25) and f_equal_float(syminfo.pointvalue, guideExpectedPointValue)
+bool guideProfileOK = guideInstrument == "Auto from chart" or (guideInstrument == "QQQ / SPY" and guideETF) or (guideInstrument == "MES / MNQ" and guideMicroFuture)
+bool guideSymbolOK = guideProfileOK and (guideETF or guideFutureSpecOK)
+bool guideTFOK = timeframe.isminutes and timeframe.multiplier >= 1 and (guideMicroFuture ? timeframe.multiplier <= 60 : timeframe.multiplier <= 15 and 390 % timeframe.multiplier == 0)
+// Futures named/extended sessions must NOT be forced through ETF RTH/390m rules.
+bool guideSessionOK = guideMicroFuture or chartSessionName == session.regular
+bool guideSupported = guideSymbolOK and guideTFOK and guideSessionOK
+bool guidePriceOnly = guideSizingPolicy == "Price references only"
+string guideSupportReason = not guideProfileOK ? "SELECTED GUIDE PROFILE DOES NOT MATCH CHART" : guideMicroFuture and not guideFutureSpecOK ? "MES/MNQ CONTRACT METADATA CHECK" : not guideSymbolOK ? "PRICE GUIDES: QQQ/SPY OR MES/MNQ CHARTS ONLY" : not guideTFOK ? (guideMicroFuture ? "MES/MNQ PRICE GUIDES REQUIRE 1-60m" : "QQQ/SPY PRICE GUIDES REQUIRE REGULAR 1-15m") : not guideSessionOK ? "QQQ/SPY PRICE GUIDES REQUIRE REGULAR SESSION" : "OK"
+int guideDurationMs = int(signalSeconds * 1000.0)
+int guideNativeSessionEnd = guideSupported ? time_close("1D") : na
+int guideFlattenAt = na(guideNativeSessionEnd) ? na : guideNativeSessionEnd - guideFlattenMinutes * 60000
+bool guideAtFlatten = not na(guideFlattenAt) and (time_close >= guideFlattenAt or time_close + guideDurationMs > guideFlattenAt)
+bool guideEntryTimeOK = guideSupported and (guideMicroFuture or session.ismarket) and not na(guideFlattenAt) and time_close + guideExpiryBars * guideDurationMs < guideFlattenAt
+bool sourceFresh = f_wall_fresh(feedStart, feedEnd, timenow)
+bool guideSignalFresh = not barstate.isrealtime or (timenow >= time_close and timenow - time_close <= 90000 and sourceFresh)
+
+int manualSide = manualPosition == "Long" ? 1 : manualPosition == "Short" ? -1 : 0
+bool manualSelected = manualSide != 0
+bool manualSymbolOK = ticker.standard(manualSymbol) == ticker.standard(syminfo.tickerid)
+bool manualGeometryOK = manualFillPrice > 0 and manualStop > 0 and manualTarget > 0 and manualSide * (manualFillPrice - manualStop) > 0 and manualSide * (manualTarget - manualFillPrice) > 0
+bool manualTickGeometryOK = not guideMicroFuture or (f_equal_float(manualStop, math.round_to_mintick(manualStop)) and f_equal_float(manualTarget, math.round_to_mintick(manualTarget)))
+// Average fills may be fractional ticks; submitted fixed stop/target prices may not.
+// A continuous-contract chart cannot identify a real broker position's expiry.
+bool manualInputsOK = manualSelected and manualSymbolOK and guideSupported and not guideContinuousFuture and manualFillTime > 0 and manualGeometryOK and manualTickGeometryOK
+bool manualBlocksNewEntry = manualSelected and (not manualInputsOK or time_close >= manualFillTime)
+var int loadedFirstBarTime = time
+var int manualObservedSession = na
+var int manualOpposingCount = 0
+var int manualPreviousPostEntryEnd = na
+var bool manualExitLatched = false
+var int manualExitAt = na
+var string manualExitReason = ""
+var bool manualHistoryGap = false
+bool manualNewExit = false
+
+if newClosedEvent and manualInputsOK and time_close > manualFillTime
+    // Establish the entry session only from the candle containing the fill time.
+    if na(manualObservedSession) and time <= manualFillTime and manualFillTime < time_close
+        manualObservedSession := time_tradingday
+    bool haveEntryHistory = not na(manualObservedSession) and manualFillTime >= loadedFirstBarTime
+    bool fullPostEntryBar = time >= manualFillTime
+    bool postEntryAdjacent = na(manualPreviousPostEntryEnd) or time == manualPreviousPostEntryEnd
+    if haveEntryHistory and not postEntryAdjacent
+        manualHistoryGap := true
+    if haveEntryHistory and not manualExitLatched
+        // The partial entry bar's high/low may predate the fill: use close only.
+        float observedLow = fullPostEntryBar ? low : close
+        float observedHigh = fullPostEntryBar ? high : close
+        bool observedPriceOK = not na(open) and not na(high) and not na(low) and not na(close) and high >= math.max(open, close) and low <= math.min(open, close) and not na(time_close) and time_close > time
+        bool stopObserved = observedPriceOK and (manualSide == 1 ? observedLow <= manualStop : observedHigh >= manualStop)
+        bool targetObserved = observedPriceOK and (manualSide == 1 ? observedHigh >= manualTarget : observedLow <= manualTarget)
+        bool opposingRaw = fullPostEntryBar and frameReady and frameDirection == -manualSide
+        bool adjacentOpposing = postEntryAdjacent and time_tradingday == time_tradingday[1]
+        manualOpposingCount := opposingRaw ? (adjacentOpposing ? manualOpposingCount + 1 : 1) : 0
+        bool timeExit = time_close - manualFillTime >= guideHoldBars * guideDurationMs
+        string currentTrendStatus = f_trend_status(chosenTrend, chartSessionId, time_close)
+        bool currentTrendKnown = currentTrendStatus == "OK" and not na(chosenTrend)
+        // Unknown trend cannot certify an exit. It is exposed as CHECK below.
+        // Stops, targets, session/time exits remain independent observations.
+        bool trendExit = false // REFERENCE ONLY; manual stop/target/time/opposing-own-TF remain.
+        string exitWhy = not observedPriceOK ? "INVALID PRICE DATA; CHECK POSITION / ORDERS" : manualHistoryGap ? "DATA GAP; CHECK POSITION / ORDERS" : stopObserved and targetObserved ? "STOP + TARGET TOUCHED; ORDER UNKNOWN" : stopObserved ? "STOP TOUCHED" : targetObserved ? "TARGET TOUCHED" : time_tradingday != manualObservedSession ? "POSITION CARRIED INTO NEW SESSION" : guideAtFlatten ? "SESSION-END THRESHOLD" : guideOppositeBars > 0 and manualOpposingCount >= guideOppositeBars ? "OPPOSING RAW CONFIRMED" : trendExit ? "CONFIRMED TREND EXIT RULE" : timeExit ? "HOLDING-TIME THRESHOLD" : ""
+        if exitWhy != ""
+            manualExitLatched := true
+            manualExitAt := time_close
+            manualExitReason := exitWhy
+            manualNewExit := true
+    manualPreviousPostEntryEnd := time_close
+
+type RetiredGuide
+    int side
+    int planId
+    int episodeId
+    float entry
+    float stop
+    float target
+    float quantity
+    int createdAt
+    int expiryAt
+    int retiredAt
+    string reason
+
+var int guideDay = na
+var int guidePlansToday = 0
+var int pendingGuideSide = 0
+var int guidePlanEnd = na
+var int guidePlanBar = na
+var int guidePlanExpiry = na
+var int guideLastAcceptedEvent = na
+var int guidePlanSerial = 0
+var int guidePlanId = na
+var int guidePlanEpisodeId = na
+var float guidePlanEntry = na
+var float guidePlanStop = na
+var float guidePlanTarget = na
+var float guidePlanQty = na
+var string guideReason = "WAIT FOR A NEW CLOSED SIGNAL"
+var string guidePlanWhy = ""
+var RetiredGuide lastRetiredGuide = na
+bool guideNewPlan = false
+bool guideCancelledThisBar = false
+bool guideHardCancelledThisBar = false
+bool guideExpiredThisBar = false
+
+if newClosedEvent
+    bool planSessionChanged = na(guideDay) or guideDay != chartSessionId
+    if planSessionChanged
+        guideDay := chartSessionId
+        guidePlansToday := 0
+        guideReason := "CURRENT SESSION WARMUP"
+    if pendingGuideSide != 0
+        bool expired = not na(guidePlanExpiry) and (time_close >= guidePlanExpiry or bar_index - guidePlanBar >= guideExpiryBars)
+        bool confirmedTrendConflict = false // REFERENCE Trend cannot cancel a plan.
+        bool invalidated = confirmedTrendConflict or not frameReady or (pendingGuideSide == 1 ? close <= guidePlanStop : close >= guidePlanStop) or (frameDirection != 0 and frameDirection != pendingGuideSide) or (guideStrictPending and qualifiedCandidate != pendingGuideSide)
+        bool hardCancel = planSessionChanged or invalidated or guideAtFlatten or manualBlocksNewEntry or not enableEntryGuides
+        if expired or hardCancel
+            string retireReason = manualBlocksNewEntry ? "MANUAL POSITION; NO ADD PLAN" : not enableEntryGuides ? "PRICE GUIDES OFF" : planSessionChanged ? "SESSION CHANGED" : guideAtFlatten ? "ENTRY SESSION WINDOW CLOSED" : invalidated ? "PLAN WITHDRAWN; QUALIFICATION / DATA CHANGED" : "PLAN EXPIRED"
+            lastRetiredGuide := RetiredGuide.new(pendingGuideSide, guidePlanId, guidePlanEpisodeId, guidePlanEntry, guidePlanStop, guidePlanTarget, guidePlanQty, guidePlanEnd, guidePlanExpiry, time_close, retireReason)
+            guideCancelledThisBar := true
+            guideHardCancelledThisBar := hardCancel
+            guideExpiredThisBar := expired
+            guideReason := retireReason
+            // Retired references are archived, never left in active fields.
+            pendingGuideSide := 0
+            guidePlanId := na
+            guidePlanEpisodeId := na
+            guidePlanEnd := na
+            guidePlanBar := na
+            guidePlanExpiry := na
+            guidePlanEntry := na
+            guidePlanStop := na
+            guidePlanTarget := na
+            guidePlanQty := na
+            guidePlanWhy := ""
+    bool legacyTransition = actionDirection != 0 and actionDirection != nz(actionDirection[1])
+    bool episodeUnconsumed = signalEpisodeId > 0 and (na(signalEpisodeAcceptedId) or signalEpisodeAcceptedId != signalEpisodeId)
+    bool knownEpisodeEligible = qualificationDataKnown and actionDirection != 0 and signalEpisodeSide == actionDirection and not signalEpisodeArmed and episodeUnconsumed
+    bool freshSignalTransition = guideEventPolicy == "Legacy transitions (comparison)" ? legacyTransition : knownEpisodeEligible
+    bool sourceEventNew = na(guideLastAcceptedEvent) or time_close > guideLastAcceptedEvent
+    // Normal expiry does NOT blanket-veto a new eligible episode on this close.
+    // A data/direction/safety cancellation still blocks same-close replacement.
+    if pendingGuideSide == 0 and not guideHardCancelledThisBar
+        string reject = manualBlocksNewEntry ? "MANUAL POSITION; NO ADD PLAN" : not enableEntryGuides ? "SIGNAL ONLY; PRICE GUIDES OFF" : not guideSupported ? guideSupportReason : actionDirection == 0 ? actionReason : guidePlansToday >= guideMaxPlans ? "SESSION GUIDE-PLAN LIMIT" : not guideEntryTimeOK ? "OUTSIDE ENTRY SESSION WINDOW" : not guideSignalFresh ? "STALE SOURCE; NO NEW PLAN" : not frameReady or not closedWindowComplete ? "INCOMPLETE CLOSED SIGNAL DATA" : not guideStructureSameSession or not guideStructureContinuous ? "STRUCTURAL STOP HISTORY INCOMPLETE" : not freshSignalTransition or not sourceEventNew ? "WAIT FOR A NEW ELIGIBLE EPISODE" : ""
+        if reject != ""
+            guideReason := reject
+        else
+            int planSide = actionDirection
+            float intendedLimit = close + planSide * guideEntryAtr * atrBase
+            float emaLimit = ema + planSide * maxEmaDistanceAtr * atrBase
+            float rawEntry = planSide == 1 ? math.min(intendedLimit, emaLimit) : math.max(intendedLimit, emaLimit)
+            float plannedEntry = planSide == 1 ? f_guide_floor(rawEntry) : f_guide_ceil(rawEntry)
+            float rawStop = planSide == 1 ? math.min(guideStructureLow - syminfo.mintick, close - guideMinStopAtr * atrBase) : math.max(guideStructureHigh + syminfo.mintick, close + guideMinStopAtr * atrBase)
+            float stopAt = planSide == 1 ? f_guide_floor(rawStop) : f_guide_ceil(rawStop)
+            float plannedR = planSide * (plannedEntry - stopAt)
+            float targetAt = planSide == 1 ? f_guide_ceil(plannedEntry + guideTargetR * plannedR) : f_guide_floor(plannedEntry - guideTargetR * plannedR)
+            float pointValue = guideMicroFuture ? syminfo.pointvalue : 1.0
+            float costCushionUSD = guideMicroFuture ? 2.0 * guideFuturesFee + 2.0 * syminfo.mintick * guideSizingSlipTicks * pointValue : 2.0 * plannedEntry * guideSizingCommissionBp / 10000.0 + 2.0 * syminfo.mintick * guideSizingSlipTicks
+            float riskPerUnitUSD = plannedR * pointValue + costCushionUSD
+            float qtyRisk = not na(riskPerUnitUSD) and riskPerUnitUSD > 0 ? math.floor(guideEquity * guideRiskPct / 100.0 / riskPerUnitUSD) : 0.0
+            float qtyCap = guideMicroFuture ? float(guideMaxContracts) : float(guideMaxShares)
+            // Futures NOTIONAL is not a share cash cost. Optional margin is a manual
+            // additional cap; margin=0 means unchecked, never zero required margin.
+            float qtyExposure = guideMicroFuture ? (guideFuturesMargin > 0 ? math.floor(guideEquity * guideExposurePct / 100.0 / guideFuturesMargin) : qtyCap) : (not na(plannedEntry) and plannedEntry > 0 ? math.floor(guideEquity * guideExposurePct / 100.0 / plannedEntry) : 0.0)
+            float qty = math.min(qtyCap, math.min(qtyRisk, qtyExposure))
+            bool geometryOK = not na(atrBase) and atrBase > 0 and not na(plannedR) and plannedR >= syminfo.mintick and plannedR <= guideMaxStopAtr * atrBase and plannedEntry > 0 and stopAt > 0 and targetAt > 0
+            if not geometryOK or (not guidePriceOnly and qty < 1)
+                guideReason := not geometryOK ? "REJECT: STOP WIDTH / PRICE GEOMETRY" : "REJECT: REFERENCE SIZE BELOW ONE " + (guideMicroFuture ? "CONTRACT" : "SHARE")
+            else
+                guidePlanSerial += 1
+                guidePlanId := guidePlanSerial
+                guidePlanEpisodeId := signalEpisodeId
+                signalEpisodeAcceptedId := signalEpisodeId
+                pendingGuideSide := planSide
+                guidePlanEnd := time_close
+                guidePlanBar := bar_index
+                guidePlanExpiry := time_close + guideExpiryBars * guideDurationMs
+                guideLastAcceptedEvent := time_close
+                guidePlanEntry := plannedEntry
+                guidePlanStop := stopAt
+                guidePlanTarget := targetAt
+                guidePlanQty := qty
+                guidePlanWhy := actionReason
+                guidePlansToday += 1
+                guideReason := "NEW CLOSED PLAN; NOT AN ORDER / FILL"
+                guideNewPlan := true
+
+// Universal direction events are independent of optional price-plan eligibility.
+
+// Direction events are research signals, not eligible orders. Same session policy
+// and native clock checks for every symbol; shortened candles stay blocked.
+bool directionEvent = newClosedEvent and signalEpisodeNew and qualificationDataKnown and actionDirection != 0
+
+
+bool manualHasBegun = manualInputsOK and not na(closed) and closed.endAt > manualFillTime
+bool manualHistoryKnown = manualHasBegun and not na(manualObservedSession) and manualFillTime >= loadedFirstBarTime
+bool guideSameSession = not na(guideDay) and guideDay == chartSessionId
+bool guideGapExpired = not barstate.isconfirmed and not na(guidePlanExpiry) and time >= guidePlanExpiry
+bool guideVisible = pendingGuideSide != 0 and guideSameSession and not guideGapExpired and not manualBlocksNewEntry
+bool chartSignalFresh = barstate.isrealtime and not na(closed) and timenow >= closed.endAt and timenow - closed.endAt <= int(signalSeconds * 1000.0) + alertGraceSeconds * 1000
+bool selectedSessionClosed = chartIntraday and session.islastbar and barstate.isconfirmed
+bool historicalDisplay = not barstate.isrealtime
+bool entryFeedStale = not historicalDisplay and (not chartSignalFresh or (requireFlow and not sourceFresh))
+bool liveDirectionEligible = not historicalDisplay and not selectedSessionClosed and chartSignalFresh and (not requireFlow or sourceFresh)
+string qualificationStatus = historicalDisplay ? "HISTORICAL / CLOSED" : selectedSessionClosed ? "SESSION CLOSED" : entryFeedStale ? "STALE / WAIT" : "LIVE | LAST CLOSED EVIDENCE"
+bool guideRealtimeExpired = barstate.isrealtime and pendingGuideSide != 0 and not na(guidePlanExpiry) and timenow >= guidePlanExpiry
+bool guideCompactVisible = enableEntryGuides and guideSupported and guideVisible and not entryFeedStale and not guideRealtimeExpired and (historicalDisplay or sourceFresh)
+bool guideLastHistorical = barstate.islast and not barstate.isrealtime
+string guideStamp = " | CLOSED " + chartTFText + " @ " + f_time(na(closed) ? na : closed.endAt)
+string manualProblem = not manualSymbolOK ? "MANUAL SYMBOL DOES NOT MATCH CHART" : guideContinuousFuture ? "OPEN THE ACTUAL DATED CONTRACT TO TRACK ITS POSITION" : not guideSupported ? guideSupportReason : manualFillTime <= 0 ? "SET ACTUAL FILL DATE / TIME" : not manualGeometryOK ? "SET VALID FILL / STOP / TARGET PRICES" : not manualTickGeometryOK ? "STOP / TARGET MUST MATCH CONTRACT TICK SIZE" : manualFillTime < loadedFirstBarTime ? "ENTRY PRECEDES LOADED HISTORY" : not manualHasBegun ? "WAIT FOR FIRST POST-ENTRY CLOSE" : not manualHistoryKnown ? "ENTRY CANDLE NOT OBSERVED" : ""
+string mergedEntryText = ""
+color mergedEntryColor = color.gray
+if manualBlocksNewEntry
+    mergedEntryText := manualProblem != "" ? "WAIT | " + manualProblem : (manualSide == 1 ? "LONG" : "SHORT") + " MANUAL @ " + f_price(manualFillPrice) + " | NO ADD | " + (manualExitLatched ? "SEE EXIT WARNING" : "SEE EXIT GUIDANCE")
+    mergedEntryColor := manualProblem != "" or manualExitLatched ? color.orange : f_color(manualSide)
+else if guideCompactVisible
+    mergedEntryText := (pendingGuideSide == 1 ? "LONG PLAN | BUY <= " : "SHORT PLAN | SELL >= ") + f_price(guidePlanEntry) + " | CONFIRMED PLAN | " + f_time(guidePlanEnd) + " -> " + f_time(guidePlanExpiry) + " | NOT FILLED" + (guideContinuousFuture ? " | CONTINUOUS CONTRACT REF" : "") + (guidePriceOnly ? " | PRICE ONLY; SIZE NOT ENFORCED" : "") + (guideLastHistorical ? " | HISTORICAL REF" : barstate.isrealtime and not sourceFresh ? " | STALE; REF ONLY" : "")
+    mergedEntryColor := guideLastHistorical or (barstate.isrealtime and not sourceFresh) ? color.gray : f_color(pendingGuideSide)
+else if not enableEntryGuides or not guideSupported
+    mergedEntryText := f_action_text(actionDirection, actionReason) + " | SIGNAL CONTEXT ONLY" + guideStamp
+    mergedEntryColor := color.gray
+else
+    string waitReason = not closedSameSession or decisionGapExpired ? actionReason : guideGapExpired ? "PLAN EXPIRED AFTER BAR GAP" : actionDirection == 0 ? actionReason : guideReason
+    mergedEntryText := "WAIT | " + waitReason + guideStamp
+
+var int auditPlanOutcome = na
+if newClosedEvent
+    auditPlanOutcome := guideNewPlan ? 1 : guideVisible ? 2 : actionDirection == 0 ? 0 : str.contains(guideReason, "SIZE") or str.contains(guideReason, "GEOMETRY") ? 3 : str.contains(guideReason, "SESSION WINDOW") or str.contains(guideReason, "ENTRY SESSION") ? 4 : str.contains(guideReason, "EPISODE") ? 5 : not guideSupported ? 6 : not frameReady or guideHardCancelledThisBar or manualBlocksNewEntry ? 7 : 8
+
+int manualTimeThreshold = manualFillTime > 0 ? manualFillTime + guideHoldBars * guideDurationMs : na
+string manualLevels = " | SL " + f_price(manualStop) + " | TP " + f_price(manualTarget) + " | time " + f_time(manualTimeThreshold)
+string exitGuideText = ""
+color exitGuideColor = chart.fg_color
+if manualSelected
+    if manualProblem != ""
+        exitGuideText := "NOT TRACKING | " + manualProblem
+        exitGuideColor := color.orange
+    else if manualExitLatched
+        exitGuideText := (manualSide == 1 ? "EXIT LONG" : "EXIT SHORT") + " | " + manualExitReason + " @ " + f_time(manualExitAt) + " | NOT A FILL CONFIRMATION"
+        exitGuideColor := color.orange
+    else
+        exitGuideText := "HOLD CHECK | MANUAL" + manualLevels + " | opposite " + str.tostring(manualOpposingCount) + "/" + str.tostring(guideOppositeBars) + " | CLOSED @ " + f_time(na(closed) ? na : closed.endAt)
+else if guideCompactVisible
+    exitGuideText := "PLAN ONLY | SL " + f_price(guidePlanStop) + " | TP " + f_price(guidePlanTarget) + " | POSITION NOT TRACKED"
+else
+    exitGuideText := "NO POSITION TRACKED | ADD ACTUAL FILL DETAILS TO ENABLE EXIT GUIDANCE"
+string sizingGuideText = "INPUT capital " + f_num(guideEquity) + " | risk <= " + f_num(guideRiskPct) + "% | " + (guideCompactVisible ? str.tostring(guidePlanQty, "0") + (guideMicroFuture ? " reference contracts" : " reference shares") : "no active size") + " | plans " + str.tostring(guidePlansToday) + "/" + str.tostring(guideMaxPlans) + " | NOT ACCOUNT PNL"
+float guideShownRiskUSD = guideCompactVisible ? math.abs(guidePlanEntry - guidePlanStop) * (guideMicroFuture ? syminfo.pointvalue : 1.0) + (guideMicroFuture ? 2.0 * guideFuturesFee + 2.0 * syminfo.mintick * guideSizingSlipTicks * syminfo.pointvalue : 2.0 * guidePlanEntry * guideSizingCommissionBp / 10000.0 + 2.0 * syminfo.mintick * guideSizingSlipTicks) : na
+sizingGuideText += guideMicroFuture ? " | risk/contract " + f_num(guideShownRiskUSD) + " | " + (guideFuturesMargin > 0 ? "manual margin " + f_num(guideFuturesMargin) : "MARGIN NOT CHECKED") : ""
+string auditTip = "UNIVERSAL DIRECTION, NOT RISK-QUALIFIED ORDER.\nCLOSED @ " + f_time(auditClosedAt) + "\nLONG: " + f_mask_text(auditLongMask) + "\nSHORT: " + f_mask_text(auditShortMask) + "\nActive basis=" + entryBasis + "; flow=" + flowPolicy + "; own DI/ADX=" + ownDmiPolicy + "; overall Trend=REFERENCE ONLY.\nMOM3=" + f_mom(na(closed) ? na : closed.mom) + "; MOM6=" + f_mom(na(closed) ? na : closed.cumulativeMom) + "; prior block=" + f_mom(na(closed) ? na : closed.priorMom) + "; EMA distance=" + f_ratio(na(closed) ? na : closed.emaDistance) + ".\nAll blockers are evaluated; zero mask is qualification before reversal/episode. Optional plan state=" + mergedEntryText
+string entryGuideTip = "ENTRY is own-TF directional qualification. L/S markers and signal alerts mark NEW episodes only; repeated qualifying bars are SAME EPISODE; only a structural reset re-arms the same side. Overall Trend, optional plan sizing, quota, session window, expiry and manual position do not veto these direction markers. The optional price plan is shown in the combined SL / Exit row and may still reject a direction signal. Neither signal nor plan implies a broker fill or an option trade. "
+string exitGuideTip = "Exit stays independent of direction. The combined row shows valid MANUAL SL/TP first, otherwise an active UNFILLED PLAN, otherwise NO POSITION. There is one existing TP, not four invented staged targets. No position is inferred from an L/S marker. Enter actual symbol, side, fill date/time, fill price, stop and target in Manual position to monitor one real position manually. Checks occur at chart closes, not as intrabar protective orders. The partial entry bar uses close only; later bars use high/low. Both SL/TP touched means ordering unknown. An exit warning latches but never marks the broker position closed. Reset position to Flat after your actual exit. WAIT alone does not cause an exit. Trend exit setting=" + guideTrendExitMode + "."
+
+// One visible Entry row: CLOSED evidence date, state, and no-chase warning.
+// Do not replace this timestamp or risk distance with developing/live-preview data.
+// Historical/reload and stale states never retain a green actionable-looking cell.
+bool entryReferenceOnly = guideLastHistorical or guideContinuousFuture or guidePriceOnly
+bool closedRiskKnown = not na(closed) and not na(closed.emaDistance)
+bool closedExtended = closedRiskKnown and math.abs(closed.emaDistance) > maxEmaDistanceAtr
+int compactEntrySide = actionDirection
+string compactEntryText = "WAIT | " + f_compact_reason(actionReason)
+if compactEntrySide != 0
+    compactEntryText := (compactEntrySide == 1 ? "L" : "S") + " | DIRECTION"
+    compactEntryText += not na(closed) and lastDirectionEventAt == closed.endAt ? " | NEW" : " | SAME"
+string compactEvidenceStatus = historicalDisplay ? "HISTORICAL / CLOSED" : selectedSessionClosed ? "SESSION CLOSED" : entryFeedStale ? "STALE / WAIT" : "LIVE CLOSED"
+compactEntryText += "\n" + compactEvidenceStatus
+compactEntryText += closedExtended ? " | EXTENDED / NO CHASE" : not closedRiskKnown ? " | RISK DATA N/A" : compactEntrySide != 0 ? " | RISK UNCHECKED" : ""
+color compactEntryColor = historicalDisplay or selectedSessionClosed ? color.gray : entryFeedStale or closedExtended ? color.orange : f_color(compactEntrySide)
+bool exitPriceEvidenceOK = not na(closed) and not na(closed.price) and not na(closed.lowValue) and not na(closed.highValue) and closed.highValue >= closed.price and closed.lowValue <= closed.price
+bool exitRawEvidenceOK = guideOppositeBars == 0 or (not na(closed) and closed.ready)
+string exitTrendEvidenceStatus = not na(closed) ? f_trend_status(closedTrend, closed.sessionId, closed.endAt) : "NO CLOSED SNAPSHOT"
+bool exitTrendEvidenceOK = guideTrendExitMode == "Off (baseline)" or exitTrendEvidenceStatus == "OK"
+bool exitRuleDataMissing = not exitPriceEvidenceOK or not exitRawEvidenceOK or not exitTrendEvidenceOK
+string compactExitText = not manualSelected ? "WAIT" : manualProblem != "" ? "CHECK" : manualExitLatched ? (str.contains(manualExitReason, "UNKNOWN") or str.contains(manualExitReason, "DATA GAP") or str.contains(manualExitReason, "INVALID PRICE") ? "CHECK" : "EXIT") : historicalDisplay or selectedSessionClosed ? "HISTORICAL" : entryFeedStale or exitRuleDataMissing ? "CHECK" : "HOLD"
+color compactExitColor = compactExitText == "CHECK" or compactExitText == "EXIT" ? color.orange : compactExitText == "HOLD" ? color.teal : color.gray
+string currentPlanTip = guideCompactVisible ? " ACTIVE UNFILLED PLAN #" + str.tostring(guidePlanId) + "; episode=" + str.tostring(guidePlanEpisodeId) + "; entry=" + f_price(guidePlanEntry) + "; SL=" + f_price(guidePlanStop) + "; TP=" + f_price(guidePlanTarget) + "; expiry=" + f_time(guidePlanExpiry) + "." : " CURRENT ACTIVE PLAN: NONE."
+string retiredPlanTip = na(lastRetiredGuide) ? " No retired plan in loaded history." : " LAST RETIRED PLAN #" + str.tostring(lastRetiredGuide.planId) + " (HISTORICAL ONLY): " + lastRetiredGuide.reason + " at " + f_time(lastRetiredGuide.retiredAt) + "; old entry=" + f_price(lastRetiredGuide.entry) + "; old SL=" + f_price(lastRetiredGuide.stop) + "; old TP=" + f_price(lastRetiredGuide.target) + ". NOT CURRENT LEVELS."
+entryGuideTip += auditTip
+entryGuideTip += " CHART=" + syminfo.tickerid + "; profile=" + guideInstrument + "; support=" + guideSupportReason + "; sizing=" + guideSizingPolicy + "; event policy=" + guideEventPolicy + "; reset bars=" + str.tostring(signalRearmBars) + ". BUY/SELL @ is a frozen LIMIT cap/floor, never a stop-entry or guaranteed execution. Continuous symbols with ! are stitched references; use the actual expiry for execution. Margin=" + (guideMicroFuture and guideFuturesMargin <= 0 ? "NOT CHECKED" : guideMicroFuture ? "manual input only" : "not futures") + ". State=" + mergedEntryText + currentPlanTip + retiredPlanTip + (entryFeedStale ? " CURRENT SOURCE STALE: WAIT." : "") + (guideRealtimeExpired ? " CURRENT PLAN EXPIRED: WAIT." : "")
+exitGuideTip += " State=" + exitGuideText + (entryFeedStale ? ". SOURCE STALE: current HOLD guidance withheld." : "") + (exitRuleDataMissing ? ". EXIT INPUTS INCOMPLETE: HOLD withheld. Price=" + str.tostring(exitPriceEvidenceOK) + "; opposing RAW=" + str.tostring(exitRawEvidenceOK) + "; trend=" + exitTrendEvidenceStatus + "." : "")
+
+// Compact SL/Exit values use existing manual/plan fields. No calculated TP1-4.
+bool showCombinedExitRow = showExitRow or enableEntryGuides or manualSelected
+string combinedExitText = "— | NO POSITION"
+color combinedExitColor = color.gray
+if manualSelected
+    if manualProblem != ""
+        combinedExitText := "CHECK | NOT TRACKING"
+        combinedExitColor := color.orange
+    else
+        combinedExitText := "SL " + f_price(manualStop) + " | TP " + f_price(manualTarget) + " | " + compactExitText
+        combinedExitText += manualExitLatched ? "\n" + manualExitReason + " @ " + str.format_time(manualExitAt, "yyyy-MM-dd HH:mm", zone) : ""
+        combinedExitText += manualExitLatched and (historicalDisplay or selectedSessionClosed) ? " | HISTORICAL" : ""
+        combinedExitColor := compactExitColor
+else if guideCompactVisible
+    combinedExitText := "PLAN ONLY | SL " + f_price(guidePlanStop) + " | TP " + f_price(guidePlanTarget)
+    combinedExitText += "\n" + (pendingGuideSide == 1 ? "L LIMIT <= " : "S LIMIT >= ") + f_price(guidePlanEntry) + " | NOT FILLED"
+    combinedExitText += historicalDisplay or selectedSessionClosed ? " | HISTORICAL" : ""
+    combinedExitColor := historicalDisplay or selectedSessionClosed ? color.gray : color.blue
+else if enableEntryGuides
+    combinedExitText := "— | NO POSITION / NO PLAN"
+exitGuideTip += " " + currentPlanTip + retiredPlanTip + " " + sizingGuideText
+
+// ── Notification issuance is independent of label/episode creation ──────────
+var int livePendingEpisodeId = na
+var int issuedEpisodeId = na
+var int issuedAt = na
+var string issuedKind = "NONE"
+bool notificationFresh = barstate.isrealtime and barstate.isconfirmed and timenow >= time_close and timenow - time_close <= alertGraceSeconds * 1000
+bool signalNotify = false
+bool recoveryNotify = false
+if newClosedEvent
+    if newSession or signalEpisodeArmed
+        livePendingEpisodeId := na
+    // Historical attachment is never eligible to arm a recovery notification.
+    if barstate.isrealtime and directionEvent and liveAlerts and signalAlerts
+        livePendingEpisodeId := signalEpisodeId
+    bool pendingSame = not na(livePendingEpisodeId) and livePendingEpisodeId == signalEpisodeId
+    bool unissued = na(issuedEpisodeId) or issuedEpisodeId != signalEpisodeId
+    bool freshRequalified = notificationFresh and qualificationDataKnown and actionDirection != 0 and not signalEpisodeArmed and (not requireFlow or sourceFresh) and not selectedSessionClosed
+    signalNotify := liveAlerts and signalAlerts and pendingSame and unissued and freshRequalified and (directionEvent or recoveryAlerts)
+    recoveryNotify := signalNotify and not directionEvent
+    if signalNotify
+        issuedEpisodeId := signalEpisodeId
+        issuedAt := barEnd
+        issuedKind := recoveryNotify ? "RECOVERY" : "NEW"
+bool entryNotify = notificationFresh and sourceFresh and guideNewPlan and liveAlerts and alertTarget != "Manual exits"
+bool exitNotify = notificationFresh and manualNewExit and liveAlerts and alertTarget != "Entry plans"
+string notificationPayload = ""
+if signalNotify
+    notificationPayload := "SQ370 | " + (recoveryNotify ? "RECOVERY REQUALIFIED " : "NEW ") + (actionDirection == 1 ? "L" : "S") + " | " + syminfo.tickerid + " | TF=" + chartTFText + " | NEW EVIDENCE=" + f_time(barEnd) + " | close=" + f_price(close) + " | episode=" + str.tostring(signalEpisodeId) + " | DI/ADX=" + ownDmiPolicy + " | Delta=" + flowPolicy + " | EMA_ATR=" + f_ratio(emaDistance) + (math.abs(emaDistance) > maxEmaDistanceAtr ? " | EXTENDED / NO CHASE" : " | RISK NOT ASSESSED") + " | NOT ORDER/FILL/OPTION SELECTION"
+if entryNotify
+    notificationPayload += (notificationPayload == "" ? "" : "\n") + "SEPARATE UNFILLED PLAN | " + syminfo.tickerid + " | " + mergedEntryText + " | SL=" + f_price(guidePlanStop) + " | TP=" + f_price(guidePlanTarget)
+if exitNotify
+    notificationPayload += (notificationPayload == "" ? "" : "\n") + "MANUAL EXIT WARNING | " + syminfo.tickerid + " | " + exitGuideText + " | CHECK BROKER POSITION"
+if notificationPayload != ""
+    alert(notificationPayload, alert.freq_once_per_bar_close)
+alertcondition(signalNotify and actionDirection == 1, "Universal L: new or recovery close", "SQ370 L on {{ticker}} {{interval}}; newly qualified close={{close}}. Direction only, not an order. Dynamic alert() includes NEW/RECOVERY kind.")
+alertcondition(signalNotify and actionDirection == -1, "Universal S: new or recovery close", "SQ370 S on {{ticker}} {{interval}}; newly qualified close={{close}}. Direction only, not an order. Dynamic alert() includes NEW/RECOVERY kind.")
+alertcondition(exitNotify, "Manual-position exit warning (closed)", "SQ370 manual exit warning. Check EXIT and actual position.")
+
+// ── One dashboard evidence packet ──────────────────────────────────────────
+ChartSnapshot shown = useClosedView ? closed : developing
+TrendSnapshot shownTrend = useClosedView ? closedTrend : chosenTrend
+RangeSnapshot shownRange = useClosedView ? closedRange : chosenRange
+string rangeTFText = f_tf_text(rangeTF)
+int rangeDisplayCutoff = useClosedView and not na(closed) ? closed.endAt : rangeCutoff
+bool rangePacketClosed = not na(shownRange) and not na(shownRange.checkedAt) and shownRange.checkedAt <= rangeDisplayCutoff
+bool rangeInvalidSource = rangePacketClosed and str.contains(shownRange.state, "INVALID SOURCE")
+bool rangeSessionOK = rangePacketClosed and (rangeSessionMode != "Same session only" or not rangeIntraday or shownRange.lastSession == chartSessionId)
+bool rangeShownReady = rangeSessionOK and not rangeInvalidSource and shownRange.count == rangeLookback and not na(shownRange.lowValue) and not na(shownRange.highValue) and shownRange.highValue >= shownRange.lowValue and shownRange.endAt <= rangeDisplayCutoff
+bool rangeSpansSession = rangeSessionOK and shownRange.firstSession != shownRange.lastSession
+bool rangeHasClockGap = rangeSessionOK and rangeIntraday and shownRange.spanMs > shownRange.count * rangeExpectedMs
+bool rangeOlderBar = rangeSessionOK and not na(shownRange.endAt) and rangeDisplayCutoff - shownRange.endAt >= rangeExpectedMs
+bool rangePartialSkipped = rangePacketClosed and shownRange.state == "PARTIAL SOURCE BAR SKIPPED"
+string rangeLabel = "RANGE " + rangeTFText + " x" + str.tostring(rangeLookback) + (compactLabels ? "" : " CLOSED")
+string rangeTip = "Completed-source multi-bar envelope: minimum low / maximum high of the last N eligible source candles. NOT a forecast, automatic support/resistance, ATR or single candle. Basis=" + rangeTFText + "; N=" + str.tostring(rangeLookback) + "; session policy=" + rangeSessionMode + ". Window=" + f_time(na(shownRange) ? na : shownRange.beginAt) + " -> " + f_time(na(shownRange) ? na : shownRange.endAt) + ". Source checked=" + f_time(na(shownRange) ? na : shownRange.checkedAt) + "; chart cutoff=" + f_time(rangeDisplayCutoff) + "; state=" + (na(shownRange) ? "NO SNAPSHOT" : shownRange.state) + ". Only evaluated source packets at/before the cutoff may be shown. " + (rangeTFClamped ? "Manual TF below chart was clamped to chart TF. " : "") + (rangeSpansSession ? "Includes more than one trading session. " : "") + (rangeHasClockGap ? "Window spans gaps / skipped partial candles; N x TF is nominal traded duration, not continuous wall time. " : "") + (rangePartialSkipped ? "Shortened source candle skipped; last N FULL source candles retained. " : "") + (rangeOlderBar ? "Last usable full source bar is older; treat the window as a historical reference. " : "") + "Insufficient history is WARMUP; invalid source OHLC/time is N/A. A true zero-width full window stays zero. RANGE does not change MOM, Delta, EMA, pivots, stop geometry or entry logic."
+bool shownOK = not na(shown) and (not chartIntraday or shown.sessionId == chartSessionId)
+string evidenceState = useClosedView ? "CLOSED" : barstate.isconfirmed ? "CLOSED" : "LIVE PREVIEW"
+int shownEnd = shownOK ? shown.endAt : na
+string snapshotStamp = chartTFText + " " + evidenceState + " @ " + f_time(shownEnd)
+float shownActualMinutes = shownOK ? float(shown.endAt - shown.beginAt) / 60000.0 : na
+bool shownShortened = shownOK and chartIntraday and not na(shownActualMinutes) and shownActualMinutes * 60.0 < signalSeconds
+string actualDurationTag = shownShortened ? " [" + str.tostring(shownActualMinutes, "0.#") + "m]" : ""
+string analyticTFText = chartTFText + actualDurationTag
+string durationTip = shownShortened ? " SHORTENED NATIVE CANDLE: actual " + f_num(shownActualMinutes) + " minutes within the nominal " + chartTFText + " chart. Price indicators use the native candle. Delta/RVOL cover its actual interval only when source coverage is verified. No full-TF entry can originate here. " : ""
+string displayedTrendStatus = shownOK ? f_trend_status(shownTrend, shown.sessionId, useClosedView ? shown.endAt : trendCutoff) : "CURRENT SESSION WARMUP"
+int displayedTrendRegime = displayedTrendStatus == "OK" and not na(shownTrend) ? shownTrend.regime : 0
+// Default MOM analytics use the active entry snapshot; native comparison is optional.
+MomentumContext momShown = useClosedView ? lastClosedMomContext : developingMomContext
+bool momShownOK = not na(momShown)
+bool momPreviousSession = momShownOK and chartIntraday and momShown.sessionId != chartSessionId
+bool momLive = not useClosedView and not barstate.isconfirmed
+float momActualMinutes = momShownOK ? float(momShown.endAt - momShown.beginAt) / 60000.0 : na
+string momDurationTag = momShownOK and chartIntraday and momActualMinutes * 60.0 < signalSeconds ? " [" + str.tostring(momActualMinutes, "0.#") + "m]" : ""
+bool activeMomDisplay = momDisplayBasis == "Active entry basis"
+string momTFText = chartTFText + (activeMomDisplay ? actualDurationTag : momDurationTag) + (activeMomDisplay ? (useGapMOM ? " [G]" : " [ENTRY]") : " NATIVE") + (momLive ? " LIVE" : "")
+string momSnapshotTag = activeMomDisplay ? (shownOK ? "" : " | WARMUP") : momPreviousSession ? " | PREV SESSION @ " + f_time(momShown.endAt) : ""
+string momMTag = (not activeMomDisplay and momShownOK and momShown.crossM ? " | XSESSION" : "") + momSnapshotTag
+string mom2MTag = (not activeMomDisplay and momShownOK and momShown.cross2M ? " | XSESSION" : "") + momSnapshotTag
+float shownMom = activeMomDisplay ? (shownOK ? shown.mom : na) : momShownOK ? momShown.mom : na
+float shownCumulativeMom = activeMomDisplay ? (shownOK ? shown.cumulativeMom : na) : momShownOK ? momShown.cumulativeMom : na
+float shownPriorMom = activeMomDisplay ? (shownOK ? shown.priorMom : na) : momShownOK ? momShown.priorMom : na
+float shownMomNorm = activeMomDisplay ? (shownOK ? shown.momNorm : na) : momShownOK ? momShown.momNorm : na
+float moveBandATR = activeMomDisplay ? (shownOK ? shown.atrValue : na) : momShownOK ? momShown.atrValue : na
+float moveBand = not na(moveBandATR) ? momMoveAtrFrac == 0 ? 0.0 : math.max(syminfo.mintick, moveBandATR * momMoveAtrFrac) : 0.0
+float momMoveRaw = activeMomDisplay ? (shownOK ? shown.mom - shown.previousMom : na) : momShownOK ? momShown.mom - momShown.previousMom : na
+float cumMoveRaw = activeMomDisplay ? (shownOK ? shown.cumulativeMom - shown.previousCumulativeMom : na) : momShownOK ? momShown.cumulativeMom - momShown.previousCumulativeMom : na
+float momMove = na(momMoveRaw) ? na : math.abs(momMoveRaw) <= moveBand ? 0.0 : momMoveRaw
+float cumMove = na(cumMoveRaw) ? na : math.abs(cumMoveRaw) <= moveBand ? 0.0 : cumMoveRaw
+color momColor = momPreviousSession ? color.gray : f_move_color(momColorMode == "Sign" ? shownMom : momMove)
+color cumulativeColor = momPreviousSession ? color.gray : f_move_color(momColorMode == "Sign" ? shownCumulativeMom : cumMove)
+string momMText = momShownOK ? f_mom_context_text(shownMom, momMove, momShown.availableCloses, momLen) : "N/A [NO CLOSED BAR]"
+string mom2MText = momShownOK ? f_mom_context_text(shownCumulativeMom, cumMove, momShown.availableCloses, momContextLen) : "N/A [NO CLOSED BAR]"
+float shownSpread = shownOK and not na(shown.plusDI) and not na(shown.minusDI) and shown.plusDI + shown.minusDI > 0 ? (shown.plusDI - shown.minusDI) / (shown.plusDI + shown.minusDI) : na
+float shownAdxChange = shownOK ? shown.adxValue - shown.previousAdx : na
+float shownEMA = shownOK ? shown.emaValue : na
+float shownATR = shownOK ? shown.atrValue : na
+
+// Pivot references are explicitly PREVIOUS CHART BAR, not hidden Daily values.
+// They are references for the currently visible bar, not a decision filter.
+bool pivotReady = not na(high[1]) and not na(low[1]) and not na(close[1]) and high[1] >= low[1] and time_close[1] <= time
+float chartP = pivotReady ? (high[1] + low[1] + close[1]) / 3.0 : na
+float chartR1 = pivotReady ? 2.0 * chartP - low[1] : na
+float chartS1 = pivotReady ? 2.0 * chartP - high[1] : na
+var line pLine = na
+if barstate.islast
+    if showPivots and pivotReady
+        if na(pLine)
+            pLine := line.new(time, chartP, time_close, chartP, xloc=xloc.bar_time, extend=extend.right, color=pivotPColor, width=2, force_overlay=true)
+        else
+            line.set_xy1(pLine, time, chartP)
+            line.set_xy2(pLine, time_close, chartP)
+    else if not na(pLine)
+        line.delete(pLine)
+        pLine := na
+
+bool staleFeed = barstate.isrealtime and not na(feedEnd) and timenow - feedEnd > 90000
+string sourceState = not chartSupported ? "CONTEXT ONLY | USE 1m-1D" : session.islastbar and barstate.isconfirmed ? "SESSION CLOSED" : staleFeed ? "DELAYED / STALE" : barstate.isrealtime ? "UPDATING" : "HISTORICAL / CLOSED"
+sourceState += " | " + qualificationStatus + " | HISTORY=" + nativeHistoryState + " | " + snapshotStamp
+sourceState += liveAlerts ? " | CLOSED EVENT ALERTS ENABLED" : " | ALERT CALLS OFF"
+string trendText = na(shownTrend) ? "WAIT | " + trendTFText + " WARMUP" : f_trend_text(displayedTrendRegime, shownTrend.adxValue, shownTrend.spread, shownTrend.emaValue - shownTrend.previousEma, trendTF, displayedTrendStatus) + " @ " + f_time(shownTrend.endAt)
+string ruleText = "OWN-TF: |MOM3/prior ATR| >= " + f_num(momAtrMin) + "; confirmation=" + confirmationMode + "; own DI/ADX=" + ownDmiPolicy + "; flow=" + flowPolicy + "; previous-bar close break=" + str.tostring(requirePriceBreak) + "; own EMA side=" + str.tostring(requireEMASide) + "; no-chase role=" + noChasePolicy + "; distance=" + f_num(maxEmaDistanceAtr) + " ATR; reverse=" + str.tostring(reversalConfirmBars) + " bars. Overall Trend REFERENCE ONLY. "
+string entryBasisTip = "ACTIVE ENTRY BASIS=" + entryBasis + ". Gap-neutral MOM preserves the full chart-bar count and subtracts each observed opening gap open-close[1]. Previous-session intraday movement remains in a cross-session window. The gap-neutral EMA is translated back into current price units. Prior native ATR is retained. The default MOM display uses this same basis; NATIVE is an optional display comparison. Overall Trend is reference-only and flow policy is universal: " + flowPolicy + ". This basis has not been validated as a return optimum."
+string sharedTip = "Except for the separately labelled Trend and RANGE, analytical calculations use the selected " + chartTFText + " chart. Evidence=" + snapshotStamp + ". Session=" + chartSessionName + ". ENTRY MOM / Delta policy=" + momentumSessionMode + ". " + ruleText + durationTip + " Table = last script snapshot, NOT the candle under the cursor. Use Data Window or Bar Replay for a historical candle. "
+string trendTip = "REFERENCE ONLY. No effect on L/S qualification, plan cancellation or manual exit. " + trendText + ". Closed source timestamps checked before display. " + sharedTip
+string momTip = "MOM basis=" + momDisplayBasis + "; active ENTRY basis=" + entryBasis + ". Active entry basis shows the exact MOM3/MOM6 used by the decision, including the same clock/session eligibility. G means gap-neutral chart price: full requested 3/6-bar history minus observed opening gaps, not shortened lookbacks. Native price comparison is display-only and uses unadjusted chart closes; XSESSION then marks an earlier-session reference. MOM3=P-P[3]; MOM6=P-P[6]; previous block=P[3]-P[6] at default length. Colour=" + momColorMode + "; arrows compare consecutive readings on the DISPLAYED basis, not trade permission. Missing values remain N/A. ENTRY evidence @ " + f_time(na(closed) ? na : closed.endAt) + "; ENTRY reason=" + actionReason + ". " + sharedTip
+string flowTip = "Estimated signed VOLUME from native 1m OHLCV of " + flowTicker + ", aggregated to the selected chart's ACTUAL candle interval. Not actual bid/ask aggressor volume, capital inflow or options delta. Method=" + flowEstimator + ". Range-weighted: 1m V*(C-O)/(H-L), bounded by +/-V; zero range uses resolved price polarity. Delta1 = sum within ONE native chart candle. DeltaN = sum of the last N eligible native chart candles, default N=3. Percentages divide by the total source volume in the SAME window, not the average of bar percentages. A shortened but fully covered native candle is valid for DISPLAY and Delta context; it cannot originate a new full-TF entry. Context only never gates signals on volume. Require Delta1 enforces its sign and magnitude; Require Delta1 + DeltaN also enforces rolling sign. This policy is identical for EVERY symbol. DeltaN includes Delta1 and is NOT an independent vote. Missing volume/minutes stay N/A; no proxy, chart-volume fallback or synthetic minutes are used. Session CVD is hidden. B/M/K are volume units, not USD. " + "VENDOR ESTIMATE: a parent-chart volume number does not certify usable minute-level volume or exchange aggressor flow. " + (shownOK ? "Delta1 state=" + shown.deltaState + "; DeltaN state=" + shown.changeState + "; source-end=" + f_time(shown.sourceEnd) + "; chart-end=" + f_time(shown.endAt) + "; source-window volume=" + f_vol(shown.sourceVolume) + "; parent-chart volume=" + f_vol(shown.chartVolume) + "; DeltaN actual candle-duration sum=" + f_num(shown.deltaWindowMinutes) + " minutes. These volume feeds are not automatically assumed equal. " : "No snapshot. ") + sharedTip
+string pivotTip = "P=(H+L+C)/3; R1=2P-L; S1=2P-H, from the PREVIOUS completed " + chartTFText + " CHART bar ending " + f_time(time_close[1]) + ". Not Daily unless chart=1D. A reference for the current chart interval; not an entry or a decision gate."
+
+// Defaults: 11 rows. Safety status is embedded in Entry, not removed.
+string chartCaption = f_tf_caption(signalTF)
+string trendCaption = f_tf_caption(trendTF)
+string analysisCaption = chartCaption + actualDurationTag + (evidenceState == "LIVE PREVIEW" ? " LIVE" : "")
+string entryZoneCaption = zone == "America/New_York" ? "ET" : zone == "Europe/London" ? "UK" : zone
+int usedRows = 4 + (showCombinedExitRow ? 1 : 0) + (showSecondMOM ? 1 : 0) + (showFlow ? 1 : 0) + (showEMArow ? 1 : 0) + (showChartTRRow ? 1 : 0) + (showPivotRow ? 1 : 0) + (showRVOLrow ? 1 : 0)
+var table panel = table.new(panelPosition, 2, usedRows, bgcolor=chart.bg_color, frame_color=color.new(chart.fg_color,65), frame_width=1, force_overlay=true)
+if barstate.islast
+    if showTable
+        int row = 0
+        f_row(panel, row, "Trend (" + trendCaption + ")", f_bias(displayedTrendRegime), f_color(displayedTrendRegime), trendTip + " Source=" + sourceState)
+        row += 1
+        string entryTitle = "Entry (" + chartCaption + ")"
+        string entryTimeTip = "Last closed evidence: " + (not na(auditClosedAt) ? str.format_time(auditClosedAt, "yyyy-MM-dd HH:mm", zone) + " " + entryZoneCaption : "NO CLOSED EVIDENCE") + ". "
+        f_row(panel, row, entryTitle, compactEntryText, compactEntryColor, entryTimeTip + entryGuideTip + sharedTip + " Full reason=" + actionReason + ". Source=" + sourceState + ". " + nativeHistoryState + ". " + entryBasisTip + " Break=" + (closedBreakSide == 1 ? "UP" : closedBreakSide == -1 ? "DOWN" : "NONE") + (requirePriceBreak ? " [FILTER]" : " [REF]"))
+        table.cell_set_bgcolor(panel, 1, row, color.new(compactEntryColor, 88))
+        row += 1
+        if showCombinedExitRow
+            f_row(panel, row, "SL / Exit", combinedExitText, combinedExitColor, exitGuideTip + " Source=" + sourceState)
+            row += 1
+        f_row(panel, row, "DMI/ADX (" + analysisCaption + ")", shownOK ? f_adx_strength(shown.adxValue, shownAdxChange, shown.plusDI, shown.minusDI, shownSpread) : "WARMUP", f_move_color(shownSpread), "Own-TF policy=" + ownDmiPolicy + ". The selected mode uses only this chart TF; Overall Trend is independent. ΔDI=(+DI - -DI)/(+DI + -DI), NOT +DI itself and not a probability. ADX arrow is ADX change, not price direction. " + (shownOK ? "+DI=" + f_num(shown.plusDI) + "; -DI=" + f_num(shown.minusDI) + "; ADX=" + f_num(shown.adxValue) + ". " : "") + sharedTip)
+        row += 1
+        f_row(panel, row, "MOM" + str.tostring(momLen) + " " + momTFText, momMText + " | /ATR " + f_ratio(shownMomNorm) + momMTag, momColor, momTip)
+        row += 1
+        if showSecondMOM
+            f_row(panel, row, "MOM" + str.tostring(momContextLen) + " " + momTFText, mom2MText + (confirmationMode == "Previous block (baseline)" ? " | PREV BLOCK " + f_mom(shownPriorMom) : "") + mom2MTag, cumulativeColor, momTip + " Active ENTRY confirmation=" + confirmationMode)
+            row += 1
+        if showFlow
+            string d1 = "Δ1: " + (shownOK and not na(shown.delta1) and not na(shown.deltaPct) ? f_vol(shown.delta1) + " (" + f_percent(shown.deltaPct) + ")" : "N/A [" + (shownOK ? f_short_status(shown.deltaState) : "WARMUP") + "]")
+            string dn = " | Δ" + str.tostring(deltaContextBars) + ": " + (shownOK and not na(shown.deltaN) and not na(shown.changePct) ? f_vol(shown.deltaN) + " (" + f_percent(shown.changePct) + ")" : "N/A [" + (shownOK ? f_short_status(shown.changeState) : "WARMUP") + "]")
+            string deltaLabel = "Est Δ (" + analysisCaption + ")"
+            f_row(panel, row, deltaLabel, d1 + dn, chart.fg_color, flowTip)
+            row += 1
+        if showEMArow
+            string pos = shownOK and not na(shownEMA) ? f_price(shownEMA) + " | " + (shown.price > shownEMA ? "ABOVE" : shown.price < shownEMA ? "BELOW" : "AT") + " | " + f_ratio(shown.emaDistance) + " ATR" : "WARMUP"
+            bool extended = shownOK and not na(shown.emaDistance) and math.abs(shown.emaDistance) > maxEmaDistanceAtr
+            f_row(panel, row, "EMA" + str.tostring(emaLen) + " (" + analysisCaption + ")" + (useGapEMA ? " [G]" : ""), pos, extended ? color.orange : emaColor, "Own EMA side is required when enabled. No-chase role=" + noChasePolicy + "; Warning only is not an entry approval. The separate price-plan cap retains its no-chase restriction. Above/below compares the snapshot close, not a later live quote. " + (shownOK ? "Snapshot price=" + f_price(shown.price) + "; EMA=" + f_price(shown.emaValue) + "; prior ATR14=" + f_price(shown.atrValue) + "; distance=(snapshot close-EMA)/prior ATR. " : "") + sharedTip)
+            row += 1
+        if showChartTRRow
+            string rangeText = rangeShownReady ? f_price(shownRange.lowValue) + " - " + f_price(shownRange.highValue) + " | " + f_price(shownRange.highValue - shownRange.lowValue) + " pts" + (rangeOlderBar ? " REF" : "") : rangeInvalidSource ? "N/A | SOURCE CHECK" : "WARMUP " + str.tostring(rangeSessionOK ? shownRange.count : 0) + "/" + str.tostring(rangeLookback)
+            f_row(panel, row, rangeLabel, rangeText, rangeInvalidSource or rangeOlderBar ? color.orange : trRangeColor, rangeTip)
+            row += 1
+        if showPivotRow
+            f_row(panel, row, (compactLabels ? "PIVOT " : "PIVOT PREV ") + chartTFText + (compactLabels ? "" : " REF"), "P " + f_price(chartP) + " | S1/R1 " + f_price(chartS1) + "/" + f_price(chartR1), pivotPColor, pivotTip)
+            row += 1
+        if showRVOLrow
+            string rvText = shownOK and not na(shown.rvolValue) ? f_num(shown.rvolValue) + "x | n=" + str.tostring(shown.rvolSamples) : "N/A [" + (shownOK ? f_short_status(shown.rvolState) : "WARMUP") + "]"
+            f_row(panel, row, "RVOL " + (rvolMode == "Chart bar" ? analyticTFText : "SESSION") + " EST", rvText, chart.fg_color, "Source=1m volume. Ratio=current actual window volume / MEDIAN of eligible prior matching session-offset windows; not a moving average of adjacent chart candles. A shortened 10m tail compares the same 10m window, not a full 15m. An observed session start and exact observed minute counts are required. Live estimates are provisional. Session mode remains cumulative. Not an entry filter. State=" + (shownOK ? shown.rvolState : "NO SNAPSHOT") + ". " + sharedTip)
+            row += 1
+        if row != usedRows
+            runtime.error("Internal dashboard row allocation mismatch.")
+    else
+        table.clear(panel, 0, 0, 1, usedRows-1)
+
+// MOM plots use the selected active-entry or explicitly NATIVE display basis.
+// Closed mode is frozen; live preview is labelled. Missing entry history is N/A.
+plot(showHistogram ? shownMom : na, "Chart MOM histogram", color=color.new(momColor,55), style=plot.style_columns, display=display.pane)
+plot(shownMom, "Chart MOM snapshot", color=momColor, linewidth=momLineWidth, style=plot.style_linebr, display=display.pane + display.data_window + display.price_scale)
+plot(showSecondMOM ? shownCumulativeMom : na, "Chart cumulative MOM snapshot", color=cumulativeColor, linewidth=2, style=plot.style_linebr, display=display.pane + display.data_window + display.price_scale)
+hline(0, "MOM zero", color=color.new(chart.fg_color,30))
+plot(showEMA ? shownEMA : na, "Chart EMA snapshot", color=emaColor, linewidth=2, force_overlay=true, display=display.pane)
+plot(showPivots and pivotReady ? chartP : na, "Previous chart-bar Pivot P tag", color=pivotPColor, force_overlay=true, display=display.price_scale)
+var table paneBadge = table.new(position.top_left, 1, 2, bgcolor=color.new(chart.bg_color,10))
+if barstate.islast
+    if showPaneBadge
+        table.cell(paneBadge, 0, 0, "MOM" + str.tostring(momLen) + " " + momTFText + " | " + momMText + momMTag, text_color=momColor, text_size=panelTextSize, tooltip=momTip)
+        table.cell(paneBadge, 0, 1, showSecondMOM ? "MOM" + str.tostring(momContextLen) + " " + momTFText + " | " + mom2MText + (confirmationMode == "Previous block (baseline)" ? " | PREV BLOCK " + f_mom(shownPriorMom) : "") + mom2MTag : "", text_color=cumulativeColor, text_size=panelTextSize, tooltip=momTip)
+    else
+        table.clear(paneBadge, 0, 0, 0, 1)
+
+// Compact audit fields. 'Shown' follows the declared dashboard evidence mode;
+// 'Decision' is always the frozen, closed chart event. No duplicate trigger TF.
+plot(actionDirection, "Decision LONG=1 WAIT=0 SHORT=-1", display=display.data_window)
+plot(shownOK ? shown.delta1 : na, "Shown estimated Delta1", display=display.data_window)
+plot(shownOK ? shown.deltaPct : na, "Shown Delta1 / volume", display=display.data_window)
+plot(shownOK ? shown.deltaN : na, "Shown estimated DeltaN (default Delta3)", display=display.data_window)
+plot(shownOK ? shown.changePct : na, "Shown DeltaN / total window volume", display=display.data_window)
+plot(shownOK ? shown.rvolValue : na, "Shown chart RVOL", display=display.data_window)
+plot(shownATR, "Shown prior chart ATR normalizer", display=display.data_window)
+plot(rangeShownReady ? shownRange.lowValue : na, "RANGE envelope low (labelled TF x N)", display=display.data_window)
+plot(rangeShownReady ? shownRange.highValue : na, "RANGE envelope high (labelled TF x N)", display=display.data_window)
+plot(na(closed) ? na : closed.price, "Decision closed chart price", display=display.data_window)
+plot(shownActualMinutes, "Shown native candle ACTUAL minutes", display=display.data_window)
+plot(na(closed) ? na : closed.deltaPct, "Decision closed Delta / volume", display=display.data_window)
+plot(na(closed) ? na : closed.endAt, "Decision source close UNIX ms", display=display.data_window)
+// No native Pine compilation or Alpaca market-backtest certification is implied.
+
+
+// Current guides are references, not an invented fill history.
+float visibleGuideEntry = manualHistoryKnown ? manualFillPrice : guideCompactVisible ? guidePlanEntry : na
+float visibleGuideStop = manualHistoryKnown ? manualStop : guideCompactVisible ? guidePlanStop : na
+float visibleGuideTarget = manualHistoryKnown ? manualTarget : guideCompactVisible ? guidePlanTarget : na
+plot(showGuideLevels ? visibleGuideEntry : na, "Guide / manual entry reference", color=color.new(color.blue, 20), linewidth=1, style=plot.style_linebr, force_overlay=true, display=display.pane + display.data_window)
+plot(showGuideLevels ? visibleGuideStop : na, "Guide / manual fixed stop", color=color.red, linewidth=1, style=plot.style_linebr, force_overlay=true, display=display.pane + display.data_window)
+plot(showGuideLevels ? visibleGuideTarget : na, "Guide / manual fixed target", color=color.teal, linewidth=1, style=plot.style_linebr, force_overlay=true, display=display.pane + display.data_window)
+plotshape(showEntryMarkers and guideNewPlan and pendingGuideSide == 1, title="Separate LONG price plan, not fill", style=shape.diamond, location=location.belowbar, color=color.blue, size=size.tiny, force_overlay=true)
+plotshape(showEntryMarkers and guideNewPlan and pendingGuideSide == -1, title="Separate SHORT price plan, not fill", style=shape.diamond, location=location.abovebar, color=color.blue, size=size.tiny, force_overlay=true)
+plotshape(showManualExitMarkers and manualNewExit, title="Manual-position EXIT warning, NOT fill", style=shape.xcross, location=location.abovebar, color=color.orange, text="EXIT", textcolor=color.orange, size=size.tiny, force_overlay=true)
+plot(guideCompactVisible ? pendingGuideSide : 0, "ENTRY active guide direction, not position", display=display.data_window)
+plot(guideCompactVisible ? guidePlanEntry : na, "ENTRY frozen ceiling / floor", display=display.data_window)
+plot(guideCompactVisible ? guidePlanStop : na, "ENTRY frozen stop reference", display=display.data_window)
+plot(guideCompactVisible ? guidePlanTarget : na, "ENTRY frozen target reference", display=display.data_window)
+plot(guideCompactVisible ? guidePlanExpiry : na, "ENTRY guide expiry UNIX ms", display=display.data_window)
+plot(manualHistoryKnown ? manualSide : 0, "MANUAL declared side, not broker feedback", display=display.data_window)
+plot(manualHistoryKnown and manualExitLatched ? 1 : 0, "MANUAL exit warning latched", display=display.data_window)
+
+plot(signalEpisodeId > 0 ? signalEpisodeId : na, "Qualified episode ID (not position)", display=display.data_window)
+plot(guideCompactVisible ? guidePlanId : na, "Active unfilled plan ID (not fill)", display=display.data_window)
+
+// Export these per-bar fields; the floating dashboard itself does not follow the cursor.
+plot(auditLongMask, "AUDIT long blocker mask", display=display.data_window)
+plot(auditShortMask, "AUDIT short blocker mask", display=display.data_window)
+plot(auditPlanOutcome, "AUDIT plan outcome code", display=display.data_window)
+plot(na(closed) ? na : closed.momNorm, "AUDIT entry MOM prior-ATR ratio", display=display.data_window)
+plot(na(closed) ? na : closed.emaDistance, "AUDIT entry EMA prior-ATR distance", display=display.data_window)
+plot(useGapMOM ? (useGapEMA ? 2 : 1) : 0, "AUDIT basis Original=0 GapMOM=1 GapBoth=2", display=display.data_window)
+
+plot(directionEvent ? actionDirection : 0, "AUDIT universal L=1 S=-1 event", display=display.data_window)
+plotshape(showDirectionMarkers and directionEvent and actionDirection == 1, title="Universal L direction, not fill", style=shape.labelup, location=location.belowbar, color=color.teal, text="L", textcolor=color.white, size=size.tiny, force_overlay=true)
+plotshape(showDirectionMarkers and directionEvent and actionDirection == -1, title="Universal S direction, not fill", style=shape.labeldown, location=location.abovebar, color=color.red, text="S", textcolor=color.white, size=size.tiny, force_overlay=true)
+
+// Compact machine-readable diagnostics; no broker-delivery acknowledgement.
+plot(na(closed) ? na : f_own_spread(closed), "AUDIT own-TF normalized DI", display=display.data_window)
+plot(na(closed) ? na : closed.adxValue, "AUDIT own-TF ADX", display=display.data_window)
+plot(signalEpisodeResetCount, "AUDIT structural reset count", display=display.data_window)
+plot(recoveryNotify ? actionDirection : 0, "AUDIT recovery issued event", display=display.data_window)
+plot(nativeBrokenJoin ? 1 : 0, "AUDIT unverified session or clock boundary", display=display.data_window)
+plot(priceEpoch, "AUDIT verified price-history epoch", display=display.data_window)
