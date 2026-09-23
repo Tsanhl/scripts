@@ -1,7 +1,7 @@
 //@version=6
-indicator("Simple Quant+ v3.15.0 | Pivot Change / TP3 / Forward Watch", shorttitle="SQ+3.15.0", overlay=false, behind_chart=false, scale=scale.right, precision=4, max_labels_count=60, max_bars_back=1000, dynamic_requests=true)
+indicator("Simple Quant+ v3.15.1 | Pivot Change / TP3 / Forward Watch", shorttitle="SQ+3.15.1", overlay=false, behind_chart=false, scale=scale.right, precision=4, max_labels_count=60, max_bars_back=1000, dynamic_requests=true)
 
-// v3.15.0: Pivot P change versus the previous Pivot P, in points; display only.
+// v3.15.1: Pivot P change versus the previous Pivot P, in points; display only.
 // Closed source bars only; no current-price comparison, new row, or signal filter.
 // Post-TP3 closed-direction context and compact terminal reasons are retained.
 // TREND CONT is display-only: TP3 still ends the reference; no TP4 or reopened entry.
@@ -2032,14 +2032,14 @@ f_pivot_change(bool comparable, float currentP, float previousP, float tick) =>
         result := math.abs(change) <= epsilon ? 0.0 : change
     result
 f_pivot_change_text(float change, float tick) =>
-    string text = "ΔP N/A"
+    string pivotChangeLabel = "ΔP N/A"
     if not na(change) and not na(tick) and tick > 0
         int decimals = int(math.min(8, math.max(2, math.ceil(-math.log10(tick)))))
         float unit = math.pow(10.0, -decimals)
         float magnitude = math.round(math.abs(change), decimals)
         string amount = change != 0 and magnitude == 0 ? "<" + str.tostring(unit, "0.00######") : str.tostring(magnitude, "0.00######")
-        text := (change > 0 ? "↑ " : change < 0 ? "↓ " : "→ ") + amount + " pts"
-    text
+        pivotChangeLabel := (change > 0 ? "↑ " : change < 0 ? "↓ " : "→ ") + amount + " pts"
+    pivotChangeLabel
 float previousChartP = chartP[1]
 bool pivotPairReady = pivotReady and pivotReady[1] and nativePriceOK[1] and nativePriceOK[2] and not na(previousChartP)
 // Intraday comparisons restart after a session boundary; never bridge missing bars.
